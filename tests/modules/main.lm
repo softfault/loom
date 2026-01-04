@@ -1,0 +1,15 @@
+use .lib as my_lib
+
+[Main]
+main = () int
+    print("Loading module...")
+    
+    # 访问模块导出的 'Lib' Table，并调用它的构造函数(默认无参)
+    # 注意：这里假设 lib.lm 里定义的是 [Lib]
+    l = my_lib.Lib()
+    
+    # 调用方法
+    res = l.add(10, 20)
+    
+    print("Result from module: " + res)
+    return 0
