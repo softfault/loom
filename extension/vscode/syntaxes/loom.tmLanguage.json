@@ -1,0 +1,151 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "Loom",
+    "patterns": [
+        {
+            "include": "#comments"
+        },
+        {
+            "include": "#strings"
+        },
+        {
+            "include": "#class-def"
+        },
+        {
+            "include": "#function-def"
+        },
+        {
+            "include": "#keywords"
+        },
+        {
+            "include": "#types"
+        },
+        {
+            "include": "#function-calls"
+        },
+        {
+            "include": "#member-access"
+        },
+        {
+            "include": "#numbers"
+        },
+        {
+            "include": "#operators"
+        },
+        {
+            "include": "#variables"
+        }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.number-sign.loom",
+                    "match": "#.*$"
+                }
+            ]
+        },
+        "strings": {
+            "name": "string.quoted.double.loom",
+            "begin": "\"",
+            "end": "\"",
+            "patterns": [
+                {
+                    "name": "constant.character.escape.loom",
+                    "match": "\\\\."
+                }
+            ]
+        },
+        "numbers": {
+            "name": "constant.numeric.loom",
+            "match": "\\b\\d+(\\.\\d+)?\\b"
+        },
+        "class-def": {
+            "name": "meta.class.loom",
+            "match": "^\\s*(\\[)([a-zA-Z_][a-zA-Z0-9_]*)(\\s*(:)\\s*([a-zA-Z_][a-zA-Z0-9_<>]*))?(\\])",
+            "captures": {
+                "1": {
+                    "name": "punctuation.definition.tag.begin.loom"
+                },
+                "2": {
+                    "name": "entity.name.type.class.loom"
+                },
+                "3": {
+                    "name": "punctuation.separator.inheritance.loom"
+                },
+                "4": {
+                    "name": "punctuation.separator.inheritance.loom"
+                },
+                "5": {
+                    "name": "entity.other.inherited-class.loom"
+                },
+                "6": {
+                    "name": "punctuation.definition.tag.end.loom"
+                }
+            }
+        },
+        "function-def": {
+            "comment": "匹配 name = (...)，区分方法定义",
+            "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(=)\\s*(?=\\()",
+            "captures": {
+                "1": {
+                    "name": "entity.name.function.loom"
+                },
+                "2": {
+                    "name": "keyword.operator.assignment.loom"
+                }
+            }
+        },
+        "function-calls": {
+            "comment": "匹配 print(...) 这种调用形式",
+            "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
+            "captures": {
+                "1": {
+                    "name": "entity.name.function.call.loom"
+                }
+            }
+        },
+        "member-access": {
+            "comment": "匹配 .name 或 .version",
+            "match": "(\\.)\\s*([a-zA-Z_][a-zA-Z0-9_]*)",
+            "captures": {
+                "1": {
+                    "name": "punctuation.accessor.loom"
+                },
+                "2": {
+                    "name": "variable.other.property.loom"
+                }
+            }
+        },
+        "keywords": {
+            "patterns": [
+                {
+                    "name": "keyword.control.loom",
+                    "match": "\\b(if|else|while|for|in|return|self)\\b"
+                }
+            ]
+        },
+        "types": {
+            "patterns": [
+                {
+                    "name": "storage.type.primitive.loom",
+                    "match": "\\b(int|float|bool|str|char|void)\\b"
+                },
+                {
+                    "name": "entity.name.type.loom",
+                    "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
+                }
+            ]
+        },
+        "operators": {
+            "match": "(=>|\\.\\.|\\+|-|\\*|/|=|:)",
+            "name": "keyword.operator.loom"
+        },
+        "variables": {
+            "comment": "兜底规则，其他的标识符就是普通变量",
+            "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b",
+            "name": "variable.other.loom"
+        }
+    },
+    "scopeName": "source.loom"
+}

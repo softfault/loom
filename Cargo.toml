@@ -1,6 +1,4 @@
-[package]
-name = "loom"
-version = "0.0.1"
-edition = "2024"
+[workspace]
+members = ["core", "lsp"]
 
-[dependencies]
+resolver = "3"

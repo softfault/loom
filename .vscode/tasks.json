@@ -1,0 +1,27 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "bun-build",
+            "type": "shell",
+            "command": "bun",
+            "args": [
+                "run",
+                "build"
+            ],
+            "options": {
+                // 注意：这里要指向你插件 package.json 所在的目录
+                "cwd": "${workspaceFolder}/extension/vscode"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always"
+            },
+            // 简单的把问题匹配器设为空，防止它死等 tsc 输出
+            "problemMatcher": []
+        }
+    ]
+}

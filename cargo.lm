@@ -1,0 +1,12 @@
+[Package]
+name = "loom"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+
+
+[Main]
+main = ()
+    package = Package()
+    print(package.name + package.version + package.edition)

@@ -1,5 +1,3 @@
-// src/driver.rs
-
 use crate::analyzer::{Analyzer, SemanticError, TableId};
 use crate::ast::TopLevelItem;
 use crate::context::Context;

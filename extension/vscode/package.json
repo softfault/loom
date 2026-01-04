@@ -1,0 +1,43 @@
+{
+  "name": "loom-extension",
+  "displayName": "Loom Language",
+  "description": "Loom language support for VS Code",
+  "version": "0.0.1",
+  "publisher": "softfault",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "loom",
+        "aliases": [
+          "Loom",
+          "loom"
+        ],
+        "extensions": [
+          ".lm"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "loom",
+        "scopeName": "source.loom",
+        "path": "./syntaxes/loom.tmLanguage.json"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "bun build ./src/index.ts --outfile=./dist/extension.js --external vscode --format=cjs --platform=node"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.75.0",
+    "@types/bun": "latest"
+  }
+}

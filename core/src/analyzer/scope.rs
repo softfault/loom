@@ -7,7 +7,6 @@ pub struct SymbolInfo {
     pub name: Symbol,
     pub ty: Type,
     pub kind: SymbolKind,
-    // span? defined_at?
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

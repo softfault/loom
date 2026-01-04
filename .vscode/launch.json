@@ -1,0 +1,18 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run Loom Extension",
+            "type": "extensionHost",
+            "request": "launch",
+            "args": [
+                "--extensionDevelopmentPath=${workspaceFolder}/extension/vscode"
+            ],
+            "outFiles": [
+                "${workspaceFolder}/extension/vscode/dist/**/*.js"
+            ],
+            // 这里必须和 tasks.json 里的 "label" 一致
+            "preLaunchTask": "bun-build"
+        }
+    ]
+}
