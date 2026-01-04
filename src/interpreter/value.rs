@@ -50,6 +50,8 @@ pub enum Value {
     BoundMethod(Rc<Instance>, MethodDefinition),
 
     BoundNativeMethod(Box<Value>, NativeFuncPtr),
+
+    Range(Box<Value>, Box<Value>),
 }
 
 pub type NativeFuncPtr = fn(&mut Context, &[Value]) -> Value;
@@ -67,6 +69,13 @@ pub struct Instance {
 // ModuleEnv 结构体可以删除了，我们现在用 FileId + Context 来管理
 
 impl Value {
+    pub fn as_int(&self) -> Option<i64> {
+        match self {
+            Value::Int(i) => Some(*i),
+            _ => None,
+        }
+    }
+
     pub fn to_string(&self, interner: &Interner) -> String {
         match self {
             Value::Nil => "nil".to_string(),
@@ -125,6 +134,8 @@ impl Value {
                 // 递归调用 receiver 的 to_string 有死循环风险，简单处理
                 format!("<bound native method>")
             }
+
+            Value::Range(start, end) => format!("{}..{}", start.to_string(), end.to_string()),
         }
     }
 }
@@ -143,6 +154,7 @@ impl fmt::Display for Value {
             Value::Instance(inst) => write!(f, "<instance>"), // 简略
             Value::Table(_) => write!(f, "<class>"),
             Value::Module(_) => write!(f, "<module>"),
+            Value::Range(start, end) => write!(f, "{}..{}", start, end),
             _ => write!(f, "<...>"),
         }
     }

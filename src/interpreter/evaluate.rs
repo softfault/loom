@@ -70,6 +70,13 @@ impl<'a> Interpreter<'a> {
             } => self.eval_for(*iterator, iterable, body),
             ExpressionData::Break { .. } => EvalResult::Break,
             ExpressionData::Continue => EvalResult::Continue,
+            // inside evaluate() match
+            ExpressionData::Range { start, end, .. } => {
+                let start_val = require_ok!(self.evaluate(start));
+                let end_val = require_ok!(self.evaluate(end));
+                // 这里只是生成 Range 对象，不展开成数组
+                EvalResult::Ok(Value::Range(Box::new(start_val), Box::new(end_val)))
+            }
 
             _ => EvalResult::Err(format!("Runtime: Unsupported expression {:?}", expr.data)),
         }
@@ -372,40 +379,109 @@ impl<'a> Interpreter<'a> {
         let collection_val = require_ok!(self.evaluate(iterable_expr));
 
         match collection_val {
+            // === Case A: 数组迭代 ===
             Value::Array(arr_rc) => {
+                // 浅拷贝快照，避免 RefCell 冲突
                 let elements = arr_rc.borrow().clone();
 
                 for item in elements {
-                    // 2. 每次循环创建一个新作用域
-                    let prev_env = self.environment.clone();
-                    let mut loop_env = Environment::with_enclosing(prev_env.clone());
-
-                    // 3. 定义迭代变量 (i)
-                    loop_env.define(iterator_sym, item);
-
-                    // 切换环境
-                    self.environment = Rc::new(RefCell::new(loop_env));
-
-                    // 4. 执行循环体
-                    let result = self.execute_block(body);
-
-                    // 恢复环境
-                    self.environment = prev_env;
-
-                    // 5. 处理控制流
+                    let result = self.eval_loop_body(body, Some((iterator_sym, item)));
                     match result {
-                        EvalResult::Ok(_) => continue,    // 正常结束，继续下一次
-                        EvalResult::Continue => continue, // 遇到 continue，继续下一次
-                        EvalResult::Break => break,       // 遇到 break，跳出循环
-                        EvalResult::Return(v) => return EvalResult::Return(v), // return 要直接跳出函数
-                        EvalResult::Err(e) => return EvalResult::Err(e),
+                        EvalResult::Ok(_) => continue,
+                        EvalResult::Continue => continue, // 吞掉 Continue，继续下一次
+                        EvalResult::Break => break,       // 遇到 Break，退出循环
+                        // Return/Err 必须向上冒泡
+                        _ => return result,
                     }
                 }
                 EvalResult::Ok(Value::Unit)
             }
-            // 将来可以支持 Range (0..10) 或 String 遍历
+
+            // === Case B: [New] 字符串迭代 ===
+            // for c in "hello" -> c 是长度为 1 的 String (或 Char)
+            Value::Str(s) => {
+                // 遍历字符
+                for c in s.chars() {
+                    // 如果你有 Value::Char，就用 Value::Char(c)
+                    // 如果没有，就用 String
+                    let char_val = Value::Str(c.to_string());
+
+                    let result = self.eval_loop_body(body, Some((iterator_sym, char_val)));
+                    match result {
+                        EvalResult::Ok(_) => continue,
+                        EvalResult::Continue => continue,
+                        EvalResult::Break => break,
+                        _ => return result,
+                    }
+                }
+                EvalResult::Ok(Value::Unit)
+            }
+
+            // === Case C: [New] 范围迭代 (Lazy) ===
+            // for i in 0..1000
+            // 不需要分配数组，直接数数
+            Value::Range(start, end) => {
+                // 注意：Loom 的 .. 是左闭右开还是全闭？
+                // Rust 是 0..10 (不包含 10)。假设 Loom 也是。
+                // 如果 start/end 是 float，可能需要报错或者转成 int
+                let start_i = match start.as_int() {
+                    Some(i) => i,
+                    None => return EvalResult::Err("Range start must be integer".into()),
+                };
+                let end_i = match end.as_int() {
+                    Some(i) => i,
+                    None => return EvalResult::Err("Range end must be integer".into()),
+                };
+
+                // 使用 Rust 的 Range 进行遍历
+                for i in start_i..end_i {
+                    let int_val = Value::Int(i);
+
+                    let result = self.eval_loop_body(body, Some((iterator_sym, int_val)));
+                    match result {
+                        EvalResult::Ok(_) => continue,
+                        EvalResult::Continue => continue,
+                        EvalResult::Break => break,
+                        _ => return result,
+                    }
+                }
+                EvalResult::Ok(Value::Unit)
+            }
+
             _ => EvalResult::Err(format!("Type {:?} is not iterable", collection_val)),
         }
+    }
+
+    /// 通用循环体执行器
+    /// item: 当前迭代的值 (对于 while 循环，这里可以传 None 或者 Unit，但在 for 循环里必传)
+    /// iterator_sym: 迭代变量绑定的名字 (for 循环用)
+    fn eval_loop_body(
+        &mut self,
+        body: &Block,
+        iterator_sym: Option<(Symbol, Value)>, // (变量名, 变量值)
+    ) -> EvalResult {
+        // 1. 每次循环创建一个新作用域
+        let prev_env = self.environment.clone();
+        let mut loop_env = Environment::with_enclosing(prev_env.clone());
+
+        // 2. 如果是 for 循环，绑定迭代变量
+        if let Some((sym, val)) = iterator_sym {
+            loop_env.define(sym, val);
+        }
+
+        // 3. 切换环境
+        self.environment = Rc::new(RefCell::new(loop_env));
+
+        // 4. 执行循环体 (复用 execute_block)
+        let result = self.execute_block(body);
+
+        // 5. 恢复环境
+        self.environment = prev_env;
+
+        // 6. 统一处理 Break/Continue
+        // 注意：这里我们消费掉 Continue，但把 Break 转换成 Ok(Unit) 以便让外层停止循环
+        // 或者保留 Break 让外层 loop 决定退出
+        result
     }
 
     // [New] 处理 return 语句

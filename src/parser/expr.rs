@@ -60,9 +60,9 @@ impl<'a> Parser<'a> {
             // 特殊检查：如果遇到 '<'，先判断它是泛型还是小于号
             if next_token.kind == TokenKind::LessThan {
                  if self.looks_like_generic_args() {
-                     // 这是一个泛型调用！转交给 postfix 处理
-                     lhs = self.parse_postfix_generic(lhs)?;
-                     continue; // 继续下一次循环
+                    // 这是一个泛型调用！转交给 postfix 处理
+                    lhs = self.parse_postfix_generic(lhs)?;
+                    continue; // 继续下一次循环
                  }
                  // 否则，它是小于号，继续下面的 op_bp 逻辑
             }
@@ -76,6 +76,25 @@ impl<'a> Parser<'a> {
             if matches!(next_token.kind, TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::Dot) {
                 lhs = self.parse_postfix(lhs)?;
             } 
+            // [Fix] 专门处理 Range (..)
+            else if next_token.kind == TokenKind::DotDot {
+                self.advance(); // 吃掉 ..
+                
+                // Range 是左结合还是右结合？通常无所谓，这里用 op_bp
+                let rhs = self.parse_expression_bp(op_bp)?;
+                
+                let span = lhs.span.to(rhs.span);
+                
+                // 生成专门的 Range 节点
+                lhs = self.make_node(
+                    ExpressionData::Range {
+                        start: Box::new(lhs),
+                        end: Box::new(rhs),
+                        inclusive: false, // Loom 默认为 0..5 (不包含5)
+                    },
+                    span
+                );
+            }
             // [New] 赋值操作处理
             else if let Some(assign_op) = self.map_assign_op(next_token.kind) {
                 self.advance(); // eat op
