@@ -135,18 +135,28 @@ impl<'a> Analyzer<'a> {
         let child_info = self.tables.get_mut(&child_name).unwrap();
 
         // 3.1 填充字段 (Fields)
-        for (f_name, f_type) in &parent_info.fields {
+        // [Fix] 注意：这里遍历拿到的是 field_info，不再只是 type
+        for (f_name, f_info) in &parent_info.fields {
             if !child_info.fields.contains_key(f_name) {
-                // Child 没定义 -> 继承 (拷贝并替换泛型)
-                let new_type = f_type.substitute(&type_mapping);
-                child_info.fields.insert(*f_name, new_type);
+                // 继承字段：
+                // 1. 类型需要替换泛型 (T -> int)
+                let new_type = f_info.ty.substitute(&type_mapping);
+
+                // 2. Span 保持父类的定义位置 (LSP 跳转到父类字段定义)
+                let new_field_info = crate::analyzer::info::FieldInfo {
+                    ty: new_type,
+                    span: f_info.span, // <--- 直接复用父类字段的 Span
+                };
+
+                child_info.fields.insert(*f_name, new_field_info);
             }
-            // 如果 Child 已经定义了，则是 Override/Shadowing，这里暂不检查类型兼容性
-            // 类型兼容性检查放在 Pass 3 (Check) 中进行
         }
 
         // 3.2 填充方法 (Methods)
-        for (m_name, m_sig) in &parent_info.methods {
+        for (m_name, m_info) in &parent_info.methods {
+            // [Fix] 这里 m_info 是 &MethodInfo
+            let m_sig = &m_info.signature;
+
             if !child_info.methods.contains_key(m_name) {
                 // Child 没定义 -> 继承
                 let new_params = m_sig
@@ -160,10 +170,15 @@ impl<'a> Analyzer<'a> {
                 let new_sig = FunctionSignature {
                     params: new_params,
                     ret: new_ret,
-                    is_abstract: false, // 继承下来的默认非抽象，除非父类本身就是抽象且没实现？
-                                        // 实际上这里我们只拷贝签名，实现(Body)是在 Interpreter 查找时去父类找
+                    is_abstract: false, // 继承的具体化
                 };
-                child_info.methods.insert(*m_name, new_sig);
+
+                let new_info = crate::analyzer::info::MethodInfo {
+                    signature: new_sig,
+                    span: m_info.span, // <--- 答案在这里：直接使用父类方法的 Span
+                };
+
+                child_info.methods.insert(*m_name, new_info);
             }
         }
 

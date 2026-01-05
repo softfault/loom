@@ -1,7 +1,9 @@
+use super::SymbolKind;
 use crate::analyzer::errors::SemanticErrorKind;
 use crate::analyzer::path::resolve_module_path;
-use crate::analyzer::scope::SymbolKind;
-use crate::analyzer::{Analyzer, FunctionSignature, ModuleInfo, TableId, TableInfo, Type};
+use crate::analyzer::{
+    Analyzer, FieldInfo, FunctionSignature, MethodInfo, ModuleInfo, TableId, TableInfo, Type,
+};
 use crate::ast::*;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
@@ -28,14 +30,19 @@ impl<'a> Analyzer<'a> {
 
     fn collect_table_definition(&mut self, def: &TableDefinition) {
         let name = def.name;
+        let id = self.current_file_id;
 
-        let table_id = TableId(self.current_file_id, name);
+        let table_id = TableId(id, name);
 
         // 1. 注册全局符号
-        if let Err(_) = self
-            .scopes
-            .define(name, Type::Table(table_id), SymbolKind::Table, false)
-        {
+        if let Err(_) = self.scopes.define(
+            name,
+            Type::Table(table_id),
+            SymbolKind::Table,
+            def.span,
+            id,
+            false,
+        ) {
             let name_str = self.ctx.resolve_symbol(name).to_string();
             self.report(def.span, SemanticErrorKind::DuplicateDefinition(name_str));
             return;
@@ -75,14 +82,23 @@ impl<'a> Analyzer<'a> {
                         Type::Infer
                     };
 
-                    if fields.insert(field.name, ty).is_some() {
+                    let field_info = FieldInfo {
+                        ty,
+                        span: field.span,
+                    };
+
+                    if fields.insert(field.name, field_info).is_some() {
                         let f_name = self.ctx.resolve_symbol(field.name).to_string();
                         self.report(field.span, SemanticErrorKind::DuplicateDefinition(f_name));
                     }
                 }
                 TableItem::Method(method) => {
                     let sig = self.collect_method_signature(method, &local_generics_scope);
-                    if methods.insert(method.name, sig).is_some() {
+                    let method_info = MethodInfo {
+                        signature: sig,
+                        span: method.span,
+                    };
+                    if methods.insert(method.name, method_info).is_some() {
                         let m_name = self.ctx.resolve_symbol(method.name).to_string();
                         self.report(method.span, SemanticErrorKind::DuplicateDefinition(m_name));
                     }
@@ -93,7 +109,7 @@ impl<'a> Analyzer<'a> {
         // 5. 存入 Analyzer Tables
         let info = TableInfo {
             name,
-            file_id: self.current_file_id,
+            file_id: id,
             parent,
             generic_params,
             fields,
@@ -211,10 +227,14 @@ impl<'a> Analyzer<'a> {
 
         // 5. 将模块注册到当前作用域
         if self.ctx.modules.contains_key(&abs_path) {
+            // 我们在当前文件定义了一个变量 (模块别名)
+            // 当用户点击这个别名时，LSP 会跳转到这条 use 语句
             if let Err(_) = self.scopes.define(
                 import_name,
-                Type::Module(abs_path),
-                SymbolKind::Variable,
+                Type::Module(abs_path), // 类型指向目标模块路径
+                SymbolKind::Variable,   // 这里视作一个变量 (或者你可以加一个 SymbolKind::Module)
+                stmt.span,              // <--- 1. 定义位置：整条 use 语句
+                self.current_file_id,   // <--- 2. 定义文件：当前分析的文件
                 false,
             ) {
                 let name = self.ctx.resolve_symbol(import_name).to_string();

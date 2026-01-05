@@ -68,34 +68,6 @@ pub enum Type {
     Module(PathBuf),
 }
 
-/// Table 的元数据信息
-#[derive(Debug, Clone)]
-pub struct TableInfo {
-    pub name: Symbol,
-    pub file_id: FileId,
-    /// 原型父类 (Inheritance/Constraint)
-    pub parent: Option<Type>,
-    /// 泛型参数名列表 <T, U>
-    pub generic_params: Vec<Symbol>,
-    /// 字段定义 (字段名 -> 类型)
-    pub fields: HashMap<Symbol, Type>,
-    /// 方法定义 (方法名 -> 签名)
-    pub methods: HashMap<Symbol, FunctionSignature>,
-    pub defined_span: Span,
-}
-
-/// 模块的“公共接口”
-#[derive(Debug, Clone)]
-pub struct ModuleInfo {
-    /// 该模块对应的文件 ID (回溯源码用)
-    pub file_id: FileId,
-    /// 文件的绝对路径 (用于唯一标识)
-    pub file_path: std::path::PathBuf,
-    /// 该模块导出的所有 Table 定义
-    pub exports: HashMap<Symbol, super::TableInfo>,
-    pub ast_definitions: HashMap<Symbol, Rc<TableDefinition>>,
-}
-
 #[derive(Debug, Clone)]
 pub struct FunctionSignature {
     pub params: Vec<(Symbol, Type)>,

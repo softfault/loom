@@ -14,6 +14,7 @@ impl FileId {
     }
 
     pub const MAX: Self = Self(usize::MAX);
+    pub const BUILTIN: Self = Self(usize::MAX);
 }
 
 /// let id: FileId = 1.into();

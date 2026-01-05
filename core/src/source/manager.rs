@@ -58,6 +58,17 @@ impl SourceManager {
         let file = self.files.get(id.get())?;
         Some(file.lookup_location(offset))
     }
+
+    /// [LSP] 更新文件内容 (用于处理 textDocument/didChange)
+    /// 这里的 src 是用户正在编辑的最新代码
+    pub fn update_file(&mut self, id: FileId, new_src: String) {
+        if let Some(file) = self.files.get_mut(id.get()) {
+            // 我们重新创建一个 SourceFile 来重新计算 line_starts
+            // 注意：这里路径保持不变
+            let new_file = SourceFile::new(file.path.clone(), new_src);
+            *file = new_file;
+        }
+    }
 }
 
 impl Index<FileId> for SourceManager {

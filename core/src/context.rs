@@ -1,5 +1,6 @@
 // context.rs
 use crate::analyzer::ModuleInfo;
+use crate::analyzer::SemanticDB;
 use crate::source::SourceManager;
 use crate::utils::{Interner, Symbol};
 use std::collections::HashMap;
@@ -21,6 +22,9 @@ pub struct Context {
     /// [Cycle Detection] 正在加载中的文件路径
     /// 用于检测循环依赖 (A -> B -> A)
     pub loading_stack: HashSet<PathBuf>,
+
+    // [New] 语义数据库
+    pub db: SemanticDB,
 }
 
 impl Context {
@@ -31,6 +35,7 @@ impl Context {
             root_dir: root_dir.canonicalize().unwrap_or(root_dir),
             modules: HashMap::new(),
             loading_stack: HashSet::new(),
+            db: SemanticDB::default(),
         }
     }
 

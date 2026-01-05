@@ -1,19 +1,25 @@
 mod check;
 mod collect;
+mod db;
 mod errors;
+mod info;
 mod path;
 mod resolve;
 mod scope;
+mod semantics;
 mod tableid;
 mod types;
 
+pub use db::{Location, SemanticDB};
 pub use errors::{SemanticError, SemanticErrorKind};
+pub use info::{FieldInfo, MethodInfo, ModuleInfo, SymbolInfo, TableInfo};
 pub use path::resolve_module_path;
-pub use scope::{ScopeManager, SymbolKind};
+pub use scope::ScopeManager;
 pub use tableid::TableId;
-pub use types::{FunctionSignature, ModuleInfo, TableInfo, Type};
+pub use types::{FunctionSignature, Type};
 
-use crate::ast::Program;
+use crate::analyzer::info::SymbolKind;
+use crate::ast::{NodeId, Program};
 use crate::context::Context;
 use crate::source::FileId;
 use crate::utils::{Span, Symbol};
@@ -82,20 +88,22 @@ impl<'a> Analyzer<'a> {
     fn register_builtins(&mut self) {
         let print_sym = self.ctx.intern("print");
 
-        // [Fix] 这里的 params 是 Vec<Type>，不要传参数名 (Symbol)
-        // print 函数：接受一个 Any 类型的参数 (或者变长参数如果不方便表示，就先放一个 Any)
         let print_type = Type::Function {
             params: vec![Type::Any],
             ret: Box::new(Type::Unit),
         };
 
-        // 这里的 kind 是 SymbolKind::Function (或者是 Variable，看你定义)
-        // allow_shadow = false (内置函数通常不允许重复定义，或者 true 允许用户覆盖)
+        // [Fix] 构造“空”位置信息
+        // 1. 使用 Span::default() (即 0..0)
+        let dummy_span = crate::utils::Span::default();
+
         let _ = self.scopes.define(
             print_sym,
             print_type,
-            SymbolKind::Method, // 假设你有 Function 这个 Kind，或者用 Variable
-            false,              // 不允许 Shadowing
+            SymbolKind::Method, // 或 SymbolKind::Function
+            dummy_span,         // <--- 这里的 Span 是空的
+            FileId::BUILTIN,    // <--- 这里的文件 ID 是特殊的
+            false,              // 不允许覆盖
         );
     }
 
@@ -118,5 +126,21 @@ impl<'a> Analyzer<'a> {
             }
         }
         None
+    }
+
+    /// [LSP Helper] 记录一个表达式的类型
+    pub fn record_type(&mut self, node_id: NodeId, ty: Type) {
+        self.ctx.db.type_map.insert(node_id, ty);
+    }
+
+    /// [LSP Helper] 记录一个引用的定义位置
+    pub fn record_def(&mut self, usage_id: NodeId, def_file: FileId, def_span: Span) {
+        self.ctx.db.def_map.insert(
+            usage_id,
+            Location {
+                file_id: def_file,
+                span: def_span,
+            },
+        );
     }
 }

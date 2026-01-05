@@ -126,6 +126,7 @@ impl<'a> Analyzer<'a> {
                     if let Some(init_sig) = table_info.methods.get(&self.ctx.intern("init")) {
                         // 对 init 方法的参数进行泛型替换
                         init_sig
+                            .signature
                             .params
                             .iter()
                             .map(|(_, ty)| ty.substitute(&type_mapping))
@@ -316,7 +317,7 @@ impl<'a> Analyzer<'a> {
         if let Some(field_ty) = table_info.fields.get(&field) {
             // [Key Step] 核心：即时替换
             // 比如定义是 item: T, mapping 是 T -> int，这里返回 int
-            return field_ty.substitute(&type_mapping);
+            return field_ty.ty.substitute(&type_mapping);
         }
 
         // B. 查找方法 (Method)
@@ -326,12 +327,13 @@ impl<'a> Analyzer<'a> {
             // 替换后:   (item: int) -> bool
 
             let new_params = method_sig
+                .signature
                 .params
                 .iter()
                 .map(|(_, p_ty)| p_ty.substitute(&type_mapping))
                 .collect();
 
-            let new_ret = method_sig.ret.substitute(&type_mapping);
+            let new_ret = method_sig.signature.ret.substitute(&type_mapping);
 
             // 返回一个 Function 类型
             // 注意：check_call_expr 会拿到这个 Function 类型并检查参数

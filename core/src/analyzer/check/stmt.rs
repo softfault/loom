@@ -88,9 +88,14 @@ impl<'a> Analyzer<'a> {
         };
 
         self.scopes.enter_scope();
-        let _ = self
-            .scopes
-            .define(iterator, item_ty, SymbolKind::Variable, true);
+        let _ = self.scopes.define(
+            iterator,
+            item_ty,
+            SymbolKind::Variable,
+            iterable.span,
+            self.current_file_id,
+            true,
+        );
         self.check_block_expr(body);
         self.scopes.exit_scope();
         Type::Unit

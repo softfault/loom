@@ -1,6 +1,10 @@
+mod assignment;
+
+use std::collections::HashSet;
+
 use super::*;
+use crate::analyzer::Span;
 use crate::analyzer::errors::SemanticErrorKind;
-use crate::analyzer::{Span, TableId};
 
 impl<'a> Analyzer<'a> {
     // === 1. 字面量与原子 ===
@@ -240,155 +244,6 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    pub(super) fn check_assignment_expr(
-        &mut self,
-        op: AssignOp,
-        left: &Expression,
-        right: &Expression,
-        span: Span, // Assign Expr Span
-    ) -> Type {
-        let rhs_ty = self.check_expression(right);
-        if rhs_ty == Type::Error {
-            return Type::Error;
-        }
-
-        // 处理复合赋值
-        if op != AssignOp::Assign {
-            let lhs_ty = self.check_expression(left);
-            if lhs_ty == Type::Error {
-                return Type::Error;
-            }
-
-            let bin_op = match op {
-                AssignOp::PlusAssign => BinaryOp::Add,
-                AssignOp::MinusAssign => BinaryOp::Sub,
-                AssignOp::MulAssign => BinaryOp::Mul,
-                AssignOp::DivAssign => BinaryOp::Div,
-                AssignOp::Assign => unreachable!(),
-            };
-
-            // 检查运算是否合法
-            let result_ty = self.check_binary_op(bin_op, lhs_ty.clone(), rhs_ty, span);
-            if result_ty == Type::Error {
-                return Type::Error;
-            }
-
-            // 检查赋值回写
-            // 例如: var a: int = 1; a += "hello";
-            // result_ty 变成了 String (假设 add 支持)，但 lhs_ty 是 Int
-            if !lhs_ty.is_assignable_from(&result_ty) {
-                // [Fix] 直接使用 helper，移除多余的手动 report
-                // helper 内部会自动调用 display() 把 Type 转为 String 并生成 TypeMismatch 错误
-                self.error_type_mismatch(span, &lhs_ty, &result_ty);
-            }
-            return Type::Unit;
-        }
-
-        // 处理简单赋值
-        match &left.data {
-            ExpressionData::Identifier(sym) => {
-                if let Some(info) = self.scopes.resolve(*sym) {
-                    // [修改点 1] 变量赋值
-                    // 旧代码: if !info.ty.is_assignable_from(&rhs_ty) {
-                    // 新代码: 使用 check_type_compatibility 支持继承/协变
-                    if !self.check_type_compatibility(&info.ty, &rhs_ty) {
-                        let var_name = self.ctx.resolve_symbol(*sym).to_string();
-                        let var_ty_str = info.ty.display(&self.ctx.interner).to_string();
-                        let rhs_ty_str = rhs_ty.display(&self.ctx.interner).to_string();
-
-                        self.report(
-                            right.span,
-                            SemanticErrorKind::Custom(format!(
-                                "Type mismatch: variable '{}' is {}, cannot assign {}",
-                                var_name, var_ty_str, rhs_ty_str
-                            )),
-                        );
-                    }
-                } else {
-                    // 新定义 (弱类型推导，或者首次赋值)
-                    let _ = self
-                        .scopes
-                        .define(*sym, rhs_ty, SymbolKind::Variable, false);
-                }
-                Type::Unit
-            }
-
-            ExpressionData::FieldAccess { target, field } => {
-                let target_ty = self.check_expression(target);
-                let expected_ty = match target_ty {
-                    Type::Table(t_sym) | Type::GenericInstance { base: t_sym, .. } => {
-                        if let Some(info) = self.tables.get(&t_sym.symbol()) {
-                            if let Some(field_ty) = info.fields.get(field) {
-                                field_ty.clone()
-                            } else {
-                                let f_name = self.ctx.resolve_symbol(*field).to_string();
-                                self.report(left.span, SemanticErrorKind::UndefinedSymbol(f_name));
-                                return Type::Error;
-                            }
-                        } else {
-                            Type::Error
-                        }
-                    }
-                    Type::Error => Type::Error,
-                    _ => {
-                        self.report(
-                            target.span,
-                            SemanticErrorKind::InvalidAssignmentTarget(
-                                "Cannot assign fields on non-table type".into(),
-                            ),
-                        );
-                        Type::Error
-                    }
-                };
-
-                if expected_ty != Type::Error
-                    && !self.check_type_compatibility(&expected_ty, &rhs_ty)
-                {
-                    self.error_type_mismatch(right.span, &expected_ty, &rhs_ty);
-                }
-                Type::Unit
-            }
-
-            ExpressionData::Index { target, index } => {
-                let target_ty = self.check_expression(target);
-                let index_ty = self.check_expression(index);
-
-                match target_ty {
-                    Type::Array(inner_ty) => {
-                        if index_ty != Type::Int {
-                            self.report(
-                                index.span,
-                                SemanticErrorKind::InvalidIndexType(
-                                    "Array index must be integer".into(),
-                                ),
-                            );
-                        }
-                        if !self.check_type_compatibility(&inner_ty, &rhs_ty) {
-                            self.error_type_mismatch(right.span, &inner_ty, &rhs_ty);
-                        }
-                    }
-                    _ => {
-                        self.report(
-                            target.span,
-                            SemanticErrorKind::TypeNotIndexable(
-                                "Index assignment only supported for Arrays".into(),
-                            ),
-                        );
-                    }
-                }
-                Type::Unit
-            }
-
-            _ => {
-                self.report(
-                    left.span,
-                    SemanticErrorKind::InvalidAssignmentTarget("Invalid assignment target".into()),
-                );
-                Type::Error
-            }
-        }
-    }
-
     pub(super) fn check_range_expr(
         &mut self,
         start: &Expression,
@@ -479,11 +334,10 @@ impl<'a> Analyzer<'a> {
 
                 let final_ty = if let Some(t_ref) = ty {
                     // 解析显式类型标注
-                    let decl_ty = self.resolve_ast_type(t_ref, &std::collections::HashSet::new());
+                    let decl_ty = self.resolve_ast_type(t_ref, &HashSet::new()); // 假设不需要 HashSet 了，或者传个空的
 
                     // 检查初始值类型
                     if !self.check_type_compatibility(&decl_ty, &init_ty) {
-                        // 使用刚才定义的 helper
                         self.error_type_mismatch(init.span, &decl_ty, &init_ty);
                     }
                     decl_ty
@@ -492,11 +346,15 @@ impl<'a> Analyzer<'a> {
                     init_ty
                 };
 
-                // 定义变量 (allow_shadow = true)
-                // span 用于定义冲突时的报错（虽然这里 allow_shadow=true 不会报冲突）
-                let _ = self
-                    .scopes
-                    .define(*name, final_ty, SymbolKind::Variable, true);
+                // 定义变量
+                let _ = self.scopes.define(
+                    *name,
+                    final_ty,
+                    SymbolKind::Variable,
+                    expr.span,            // <--- 1. 使用整个表达式的 Span
+                    self.current_file_id, // <--- 2. 当前文件 ID
+                    true,                 // allow_shadow (Loom 允许遮蔽)
+                );
 
                 Type::Unit
             }

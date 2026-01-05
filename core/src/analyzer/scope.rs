@@ -1,22 +1,8 @@
+use super::info::*;
 use super::types::Type;
-use crate::utils::Symbol;
+use crate::source::FileId;
+use crate::utils::{Span, Symbol};
 use std::collections::HashMap;
-
-#[derive(Debug, Clone)]
-pub struct SymbolInfo {
-    pub name: Symbol,
-    pub ty: Type,
-    pub kind: SymbolKind,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SymbolKind {
-    Variable,  // 本地变量 (var/let)
-    Parameter, // 函数参数
-    Field,     // Table 字段
-    Method,    // Table 方法
-    Table,     // Table 类型名
-}
 
 #[derive(Debug, Default)]
 pub struct Scope {
@@ -53,6 +39,10 @@ impl ScopeManager {
         name: Symbol,
         ty: Type,
         kind: SymbolKind,
+        // [New] 必须传入定义时的位置
+        span: Span,
+        // [New] 必须传入定义时的文件 (通常是 analyzer.current_file_id)
+        file_id: FileId,
         allow_shadow: bool,
     ) -> Result<(), SymbolKind> {
         let current_scope = self.scopes.last_mut().unwrap();
@@ -63,10 +53,16 @@ impl ScopeManager {
             }
         }
 
-        // Insert 会覆盖旧值，这正是 Shadowing 想要的效果
-        current_scope
-            .symbols
-            .insert(name, SymbolInfo { name, ty, kind });
+        current_scope.symbols.insert(
+            name,
+            SymbolInfo {
+                name,
+                ty,
+                kind,
+                defined_span: span,    // 存下来！
+                defined_file: file_id, // 存下来！
+            },
+        );
         Ok(())
     }
 
