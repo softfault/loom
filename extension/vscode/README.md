@@ -1,15 +1,8 @@
-# vscode
+# Loom for VS Code
 
-To install dependencies:
+Syntax highlighting support for the Loom programming language.
 
-```bash
-bun install
-```
+## Features
 
-To run:
-
-```bash
-bun run index.ts
-```
-
-This project was created using `bun init` in bun v1.3.5. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
+- Syntax highlighting for keywords, types, and functions.
+- Brace matching.

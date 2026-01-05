@@ -1,9 +1,14 @@
 {
-  "name": "loom-extension",
+  "name": "loom-support",
   "displayName": "Loom Language",
-  "description": "Loom language support for VS Code",
-  "version": "0.0.1",
+  "description": "Syntax highlighting for the Loom programming language",
+  "version": "0.0.3",
+  "license": "MIT",
   "publisher": "softfault",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/softfault/loom"
+  },
   "engines": {
     "vscode": "^1.75.0"
   },
@@ -11,6 +16,7 @@
     "Programming Languages"
   ],
   "main": "./dist/extension.js",
+  "activationEvents": [],
   "contributes": {
     "languages": [
       {
@@ -34,10 +40,18 @@
     ]
   },
   "scripts": {
-    "build": "bun build ./src/index.ts --outfile=./dist/extension.js --external vscode --format=cjs --platform=node"
+    "vscode:prepublish": "bun run build",
+    "build": "bun build ./index.ts --outfile=./dist/extension.js --external vscode --format=cjs --platform=node"
   },
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
   "devDependencies": {
-    "@types/vscode": "^1.75.0",
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@vscode/vsce": "^3.7.1",
+    "ovsx": "^0.10.7"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
   }
 }
