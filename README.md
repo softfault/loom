@@ -1,17 +1,23 @@
 # Loom
 
-> A statically typed, object-oriented scripting language written in Rust.
+> A statically typed, modular, object-oriented scripting language written in Rust.
 
-Loom 是一门结合了脚本语言灵活性与静态语言安全性的编程语言,灵感来自Toml和Python。它拥有类似 Python 的简洁语法，但在编译期（Analyzer 阶段）就能通过强大的类型检查系统捕获错误。
+Loom 是一门结合了脚本语言灵活性与静态语言安全性的编程语言，灵感来自 TOML 和 Python。它拥有类似 Python 的简洁语法，但在编译期（Analyzer 阶段）就能通过强大的类型检查系统捕获错误。
 
 它的设计目标是提供一种现代化的脚本体验：**写的时候像脚本一样流畅，跑的时候像 Rust 一样放心。**
 
-## 特性 
+## 核心特性
+
+* **模块化系统 (New!)**:
+* 支持多文件项目结构。
+* 支持 `use` 语句导入模块。
+* 支持跨模块继承 (`[Dog : lib.Animal]`) 和类型引用。
+
 
 * **强类型系统**: 支持 `int`, `float`, `bool`, `str`, `char` 等基础类型，以及强大的类型推导。
 * **面向对象**:
 * 支持类定义 (`[ClassName]`)。
-* 支持单继承 (`[Dog : Animal]`)。
+* 支持单继承。
 * 支持方法重写与多态 (Dynamic Dispatch)。
 
 
@@ -26,10 +32,14 @@ Loom 是一门结合了脚本语言灵活性与静态语言安全性的编程语
 * `for-in` 迭代器（支持数组、字符串遍历，以及零开销的 Range `0..100`）。
 
 
-* **安全性**: 完整的语义分析器，支持作用域检查、类型兼容性检查和泛型约束验证。
+* **安全性**:
+* 基于 `TableId` 的全程序符号解析。
+* 完整的语义分析器，支持作用域检查、类型兼容性检查和泛型约束验证。
+
+
 * **Rust 驱动**: 解释器使用 Rust 编写，内存安全且高效。
 
-## 快速开始 
+## 快速开始
 
 ### 环境要求
 
@@ -39,7 +49,7 @@ Loom 是一门结合了脚本语言灵活性与静态语言安全性的编程语
 
 ```bash
 # 克隆仓库
-git clone https://github.com/your-username/loom.git
+git clone https://github.com/softfault/loom.git
 cd loom
 
 # 运行示例脚本
@@ -47,13 +57,46 @@ cargo run tests/hello.lm
 
 ```
 
-## 语法示例 
+## 语法示例
 
-### 1. 基础语法与类型推导
+### 1. 模块化与跨文件继承
+
+Loom v0.0.2 引入了完整的模块系统。
+
+**`libs/animal_lib.lm`**:
 
 ```toml
-[Main]
-main = () int
+[Animal]
+name: str
+make_sound = () => print("Generic Sound")
+
+```
+
+**`main.lm`**:
+
+```toml
+# 导入模块，创建别名
+use .animal_lib as lib
+
+# 跨模块继承：Dog 继承自 animal_lib 定义的 Animal
+# 编译器会自动去 lib 中查找父类定义，并检查字段兼容性
+[Dog : lib.Animal]
+make_sound = () => print("Woof!")
+
+[main()]
+    # 使用导入模块的类型
+    a: lib.Animal = Dog()
+    a.name = "Hachiko"
+    
+    # 多态调用
+    a.make_sound() # 输出: Woof!
+
+```
+
+### 2. 基础语法与类型推导
+
+```toml
+[main()]
     # 变量定义 (自动推导为 str)
     greet = "Hello, Loom!"
     print(greet)
@@ -65,45 +108,10 @@ main = () int
         print("Count is big")
     else
         print("Count is small")
-        
-    return 0
 
 ```
 
-### 2. 面向对象与多态
-
-Loom 支持完整的类继承体系和运行时多态。
-
-```toml
-[Animal]
-make_sound = () => print("...")
-
-[Dog : Animal]
-make_sound = () => print("Woof!")
-
-[Cat : Animal]
-make_sound = () => print("Meow!")
-
-[Trainer]
-train = (a: Animal) 
-    print("Training session start:")
-    a.make_sound() # 动态分派：根据运行时类型调用正确的方法
-
-[Main]
-main = () int
-    trainer = Trainer()
-    
-    d = Dog()
-    c = Cat()
-    
-    trainer.train(d) # 输出: Woof!
-    trainer.train(c) # 输出: Meow!
-    
-    return 0
-
-```
-
-### 3. 泛型与协变 
+### 3. 泛型与协变
 
 Loom 的类型系统支持泛型协变，这意味着“一箱苹果”可以被视为“一箱水果”。
 
@@ -113,8 +121,7 @@ val: T
 set = (v: T) => self.val = v
 get = () T => return self.val
 
-[Main]
-main = () int
+[main()]
     # 实例化泛型
     int_box = Box<int>()
     int_box.set(100)
@@ -122,18 +129,15 @@ main = () int
     # 泛型协变演示
     box_dog = Box<Dog>()
     box_animal: Box<Animal> = box_dog
-    
-    return 0
 
 ```
 
-### 4. 迭代器 
+### 4. 迭代器
 
 支持多种数据类型的遍历。
 
 ```toml
-[Main]
-main = () int
+[main()]
     # 1. 数组遍历
     arr = [10, 20, 30]
     for x in arr
@@ -148,49 +152,47 @@ main = () int
     # 不会分配内存，直接生成数值
     for i in 0..5
         print(i) # 0, 1, 2, 3, 4
-        
-    return 0
 
 ```
 
 ## 项目架构 
 
-Loom 的编译器架构清晰，分为三个主要阶段：
+Loom 的编译器架构在 v0.0.2 进行了重构，以支持多文件分析和更严格的类型检查：
 
-1. **Parser (`src/parser/`)**:
-* 基于递归下降 (Recursive Descent) 算法。
-* 支持优先级解析 (Pratt Parsing) 处理表达式。
-* 生成类型安全的 AST (`src/ast.rs`).
-
-
-2. **Analyzer (`src/analyzer/`)**:
-* **Pass 1 (Collect)**: 扫描所有文件，收集类和方法的符号定义。
-* **Pass 2 (Resolve)**: 解析类型引用，建立继承关系图。
-* **Pass 3 (Check)**: 深度语义检查。
-* `check/expr.rs`: 表达式类型检查。
-* `check/stmt.rs`: 控制流与作用域检查。
-* `check/decl.rs`: 泛型约束、方法重写兼容性检查。
+1. **SourceManager (`src/source/`)**:
+* 统一管理多文件源码，提供 `FileId` 到文件路径的映射。
+* 支持按需加载和缓存文件内容。
 
 
-* 实现了复杂的类型兼容性逻辑（包括协变）。
+2. **Parser (`src/parser/`)**:
+* 基于递归下降与 Pratt Parsing。
+* **更新**: 支持 `lib.Type` 形式的成员类型解析。
 
 
-3. **Interpreter (`src/interpreter/`)**:
+3. **Analyzer (`src/analyzer/`)**:
+* **核心重构**: 将符号表 Key 从 `Symbol` (字符串) 升级为 `TableId` (FileId + Symbol)。这消除了同名类在不同文件中的歧义。
+* **Pass 1 (Collect)**: 收集所有文件的符号定义。
+* **Pass 2 (Resolve)**: 处理继承关系，支持**跨文件父类查找**和静态字段拷贝 (Static Field Copying)。
+* **Pass 3 (Check)**: 深度语义检查，利用 `TableId` 进行精确的类型兼容性验证（支持泛型协变）。
+
+
+4. **Interpreter (`src/interpreter/`)**:
 * 基于 AST 的 Tree-Walking 解释器。
-* 使用 `Rc<RefCell<Environment>>` 管理运行时作用域和闭包环境。
-* 内置值类型 (`Value`) 支持引用计数管理的对象模型。
+* **更新**: 实现了**动态原型链查找 (Dynamic Prototype Lookup)**。当遇到跨模块继承时，解释器会自动在运行时环境中查找导入的模块对象，从而正确调用父类方法。
 
 
 
-## 路线图 (Roadmap)
+## 路线图
 
 * [x] 基础类型与控制流
 * [x] 面向对象 (类、继承、多态)
 * [x] 泛型系统 (Generics & Covariance)
-* [x] 模块化分析器架构重构
+* [x] **模块化系统 (Modules & Imports)** (v0.0.2 Completed)
+* [x] **顶层函数与定义支持** (main函数，"全局"变量)
+* [x] **Analyzer 架构重构 (TableId System)** (v0.0.2 Completed)
 * [ ] **闭包 (Closures) 与高阶函数**
 * [ ] **标准库 (Standard Library)**: 文件 IO、系统调用
-* [ ] **编译后端 (AOT) 或jit**
+* [ ] **LSP (Language Server Protocol)**: 提供代码补全和跳转定义
 
 ## License
 
