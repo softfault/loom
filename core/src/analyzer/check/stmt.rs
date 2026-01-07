@@ -30,8 +30,8 @@ impl<'a> Analyzer<'a> {
             }
 
             if !then_ty.is_assignable_from(&else_ty) && !else_ty.is_assignable_from(&then_ty) {
-                let t_str = then_ty.display(&self.ctx.interner).to_string();
-                let e_str = else_ty.display(&self.ctx.interner).to_string();
+                let t_str = then_ty.display(&self.ctx).to_string();
+                let e_str = else_ty.display(&self.ctx).to_string();
                 self.report(
                     span, // If expression span
                     SemanticErrorKind::IfBranchIncompatible {
@@ -44,7 +44,7 @@ impl<'a> Analyzer<'a> {
             then_ty
         } else {
             if then_ty != Type::Unit && then_ty != Type::Never && then_ty != Type::Error {
-                let t_str = then_ty.display(&self.ctx.interner).to_string();
+                let t_str = then_ty.display(&self.ctx).to_string();
                 self.report(
                     then_block.span, // 最好是指向 then block 结束位置或者整个 if
                     SemanticErrorKind::IfMissingElse(t_str),
@@ -81,7 +81,7 @@ impl<'a> Analyzer<'a> {
             Type::Str => Type::Str,
             Type::Error => Type::Error,
             _ => {
-                let ty_str = iterable_ty.display(&self.ctx.interner).to_string();
+                let ty_str = iterable_ty.display(&self.ctx).to_string();
                 self.report(iterable.span, SemanticErrorKind::TypeNotIterable(ty_str));
                 Type::Error
             }

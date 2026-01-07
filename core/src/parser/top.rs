@@ -4,14 +4,15 @@ use crate::token::TokenKind;
 use crate::utils::{Span, Symbol};
 
 impl<'a> Parser<'a> {
-    /// 解析顶层 Table 定义
-    /// 语法: [Name<Generics>: Prototype]
-    ///       field = ...
-    ///       method = ...
-    pub fn parse_table_definition(&mut self) -> ParseResult<TableDefinition> {
+    // [Refactor] 重命名并修改返回值
+    // 原来的 parse_table_definition 改为这个
+    /// 解析顶层定义 (Table 或 Top-level Function)
+    /// Case 1 Table:    [Name<T>: Proto]
+    /// Case 2 Function: [Name<T>(arg: T) Ret]
+    pub fn parse_definition(&mut self) -> ParseResult<TopLevelItem> {
         let start_span = self.peek().span;
 
-        // 1. Header: [Name<G>: Proto]
+        // 1. 公共头部: [Name<G>
         self.expect(TokenKind::LeftBracket)?;
         let name_token = self.expect(TokenKind::Identifier)?;
         let name = self.intern_token(name_token);
@@ -22,64 +23,119 @@ impl<'a> Parser<'a> {
             Vec::new()
         };
 
-        let prototype = if self.match_token(&[TokenKind::Colon]) {
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
+        // 2. 分支判断
+        // 如果下一个是 '('，说明是顶层函数 [func(...)]
+        // 如果下一个是 ':' 或 ']'，说明是 Table [Class]
+        if self.check(TokenKind::LeftParen) {
+            // === Case Function ===
+            // 调用 parse_method_definition 的核心逻辑
+            // 注意：parse_method_definition 负责解析 (args) Ret ...
+            // 但顶层函数的 Body 在 Header 之外（即 ] 之后），所以我们需要手动组合
 
-        self.expect(TokenKind::RightBracket)?;
+            // 2.1 解析参数和返回值
+            let params = self.parse_param_list()?;
 
-        // Header 后允许换行
-        if self.check(TokenKind::Newline) {
-            self.advance();
-        }
+            // 2.2 解析返回值 (在 ']' 之前)
+            let return_type = if !self.check(TokenKind::RightBracket) {
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
 
-        // 2. Body: 解析 Items
-        let mut items = Vec::new();
+            // 2.3 结束 Header
+            self.expect(TokenKind::RightBracket)?;
 
-        loop {
-            // A. 跳过空行 (非常重要，否则连续换行会卡死)
-            while self.match_token(&[TokenKind::Newline]) {}
+            // 2.4 解析 Body
+            // 顶层函数的 Body 就像 Table 下面的 Item 一样，通常是缩进块
+            // 但按照你的语法：
+            // [add(a, b) int]
+            //     return a+b
+            // 这里我们需要解析一个 Block
 
-            // B. 退出条件
-            // 1. 文件结束
-            // 2. 遇到下一个 Table 的开始 '[' (因为 Loom 不一定用缩进强制层级，遇到新Header说明当前结束)
-            if self.is_at_end() || self.check(TokenKind::LeftBracket) {
-                break;
+            // 允许 Header 后换行
+            if self.check(TokenKind::Newline) {
+                self.advance();
             }
 
-            // C. 错误恢复/检查
-            // 如果既不是Identifier，又没结束，说明有垃圾字符
-            if !self.check(TokenKind::Identifier) {
-                // 这里可以选择直接报错，或者尝试 skip 直到下一行（错误恢复）
-                // 简单起见，我们直接报错
-                let token = self.peek();
-                return Err(crate::parser::ParseError {
-                    expected: "Field or Method Name".into(),
-                    found: token.kind,
-                    span: token.span,
-                    message: "Expected a definition inside the table".into(),
+            let body = if self.check(TokenKind::Indent) {
+                Some(self.parse_block()?)
+            } else {
+                // 如果是单行模式 [func] => expr 也可以支持，或者暂时只支持 Block
+                // 这里假设必须有实现
+                return Err(ParseError {
+                    expected: "Indented Block".into(),
+                    found: self.peek().kind,
+                    span: self.peek().span,
+                    message: "Top-level function must have a body".into(),
                 });
+            };
+
+            let end_span = body.as_ref().map(|b| b.span).unwrap_or(start_span);
+
+            let func_def = self.make_node(
+                MethodDefinitionData {
+                    name,
+                    generics,
+                    params,
+                    return_type,
+                    body,
+                },
+                start_span.to(end_span),
+            );
+
+            Ok(TopLevelItem::Function(func_def))
+        } else {
+            // === Case Table ===
+            // 2.1 可选的原型 : Proto
+            let prototype = if self.match_token(&[TokenKind::Colon]) {
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
+
+            self.expect(TokenKind::RightBracket)?;
+
+            // Header 后允许换行
+            if self.check(TokenKind::Newline) {
+                self.advance();
             }
 
-            // D. 解析单个 Item
-            // 此时 peek 必然是 Identifier，放心交给 parse_table_item
-            let item = self.parse_table_item()?;
-            items.push(item);
+            // 2.2 解析 Body (Items)
+            let mut items = Vec::new();
+
+            loop {
+                while self.match_token(&[TokenKind::Newline]) {}
+
+                if self.is_at_end() || self.check(TokenKind::LeftBracket) {
+                    break;
+                }
+
+                if !self.check(TokenKind::Identifier) {
+                    let token = self.peek();
+                    return Err(ParseError {
+                        expected: "Field or Method Name".into(),
+                        found: token.kind,
+                        span: token.span,
+                        message: "Expected a definition inside the table".into(),
+                    });
+                }
+
+                let item = self.parse_table_item()?;
+                items.push(item);
+            }
+
+            let end_span = self.previous_span();
+
+            Ok(TopLevelItem::Table(self.make_node(
+                TableDefinitionData {
+                    name,
+                    prototype,
+                    generics,
+                    items,
+                },
+                start_span.to(end_span),
+            )))
         }
-
-        let end_span = self.previous_span();
-
-        Ok(self.make_node(
-            TableDefinitionData {
-                name,
-                prototype,
-                generics,
-                items,
-            },
-            start_span.to(end_span),
-        ))
     }
 
     /// 解析泛型参数列表 <T: Base, U>
@@ -131,35 +187,34 @@ impl<'a> Parser<'a> {
             None
         };
 
-        // 3. 判断是否有赋值号 '='
-        // 这里是核心改动：用 match_token 而不是 expect
+        // [Modified] 检查赋值与泛型
         if self.match_token(&[TokenKind::Assign]) {
-            // === 分支 A: 有等号 (=) ===
-            // 可能是字段赋值 (val = 1)
-            // 也可能是方法定义 (method = (args) ...)
+            // Case 1: 泛型方法 map = <U>(...)
+            // 检查下一个是否是 '<'
+            if self.check(TokenKind::LessThan) {
+                let generics = self.parse_generic_params()?;
+                // 泛型解析完后，必须紧跟 '('
+                let method = self.parse_method_definition(name, start_span, generics)?;
+                return Ok(TableItem::Method(method));
+            }
 
-            // 判别逻辑：如果是 '(' 且后面像参数列表，那就是方法
+            // Case 2: 普通方法 map = (args)...
+            // 检查下一个是否是 '(' 且像参数列表
             let is_method_start = self.check(TokenKind::LeftParen) && self.looks_like_param_list();
 
             if is_method_start {
-                // -> 解析方法
-                // 注意：这里要把之前解析的 name 和 span 传进去，或者让 method_def 自己处理
-                // 假设 parse_method_definition 负责解析 (args) body
-                let method = self.parse_method_definition(name, start_span)?;
+                let method = self.parse_method_definition(name, start_span, Vec::new())?;
                 Ok(TableItem::Method(method))
             } else {
-                // -> 解析字段 (有初始值)
+                // Case 3: 字段赋值 field = expr
                 let expr = self.parse_expression()?;
-
-                // 允许并吃掉结尾的换行符
                 self.match_token(&[TokenKind::Newline]);
-
                 let end_span = expr.span;
                 Ok(TableItem::Field(self.make_node(
                     FieldDefinitionData {
                         name,
                         type_annotation,
-                        value: Some(expr), // 有值
+                        value: Some(expr),
                     },
                     start_span.to(end_span),
                 )))
@@ -207,29 +262,25 @@ impl<'a> Parser<'a> {
         &mut self,
         name: Symbol,
         start_span: Span,
+        generics: Vec<GenericParam>, // New Arg
     ) -> ParseResult<MethodDefinition> {
-        // 1. 参数列表
         let params = self.parse_param_list()?;
 
-        // 2. 返回类型
         let return_type = if !self.check(TokenKind::Newline)
             && !self.check(TokenKind::Indent)
             && !self.check(TokenKind::FatArrow)
             && !self.check(TokenKind::LeftBrace)
             && !self.check(TokenKind::Equal)
-        // 防御性
         {
             Some(self.parse_type()?)
         } else {
             None
         };
 
-        // 3. 方法体 (Body) - 关键修改
         let mut body = None;
-        let mut end_span = self.previous_span(); // 默认结束位置在返回类型或参数列表末尾
+        let mut end_span = self.previous_span();
 
         if self.match_token(&[TokenKind::FatArrow]) {
-            // Case A: 单行模式 => expr
             let expr = self.parse_expression()?;
             end_span = expr.span;
             body = Some(self.make_node(
@@ -239,27 +290,20 @@ impl<'a> Parser<'a> {
                 end_span,
             ));
         } else {
-            // Case B: 块模式 或 纯签名
-            // 允许方法签名后换行
             if self.check(TokenKind::Newline) {
                 self.advance();
             }
-
-            // 检查是否有缩进？
             if self.check(TokenKind::Indent) {
-                // 有缩进 -> 是具体实现
                 let block = self.parse_block()?;
                 end_span = block.span;
                 body = Some(block);
-            } else {
-                // 没有缩进 (是 Dedent, Identifier, EOF 等) -> 纯签名 (Abstract)
-                // body 保持为 None
             }
         }
 
         Ok(self.make_node(
             MethodDefinitionData {
                 name,
+                generics, // Field
                 params,
                 return_type,
                 body,
@@ -496,6 +540,57 @@ impl<'a> Parser<'a> {
                 anchor,
                 path,
                 alias,
+            },
+            start_span.to(end_span),
+        ))
+    }
+
+    /// [New] 解析顶层变量定义
+    /// 语法: name (: type)? = value
+    /// 或者: name : type
+    pub fn parse_top_level_field(&mut self) -> ParseResult<FieldDefinition> {
+        // 1. 解析名字
+        let name_token = self.expect(TokenKind::Identifier)?;
+        let name = self.intern_token(name_token);
+        let start_span = name_token.span;
+
+        // 2. 解析可选类型 (: Type)
+        let type_annotation = if self.match_token(&[TokenKind::Colon]) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        // 3. 解析赋值
+        // 顶层变量通常建议初始化，但也允许 `ver: str` 这种纯声明（如果允许的话）
+        let value = if self.match_token(&[TokenKind::Assign]) {
+            let expr = self.parse_expression()?;
+            Some(expr)
+        } else {
+            None
+        };
+
+        // 4. 结尾检查
+        // 必须以换行符结束（或者是 EOF）
+        // 如果没有值也没有类型，那是没有意义的单独 Identifier，应该在前面就报错
+        if type_annotation.is_none() && value.is_none() {
+            return Err(ParseError {
+                expected: "'=' or ':'".into(),
+                found: self.peek().kind,
+                span: self.peek().span,
+                message: "Top-level variable must have a type annotation or an initial value"
+                    .into(),
+            });
+        }
+
+        self.match_token(&[TokenKind::Newline]);
+        let end_span = self.previous_span(); // 这里的 span 计算可能需要根据是否有 value 微调，不过 previous_span 通常够用
+
+        Ok(self.make_node(
+            FieldDefinitionData {
+                name,
+                type_annotation,
+                value,
             },
             start_span.to(end_span),
         ))

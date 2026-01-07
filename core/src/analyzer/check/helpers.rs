@@ -1,21 +1,21 @@
 use super::*;
+use crate::analyzer::TableId;
 
 impl<'a> Analyzer<'a> {
     pub fn check_type_compatibility(&self, target: &Type, source: &Type) -> bool {
-        // 1. 基础检查
+        // 1. 基础检查 (Int, Str, Bool, Any 等)
         if target.is_assignable_from(source) {
             return true;
         }
 
-        // 2. 复杂类型检查
         match (target, source) {
             // Case A: 普通类的继承 (Animal vs Dog)
+            // [Fix] 使用 TableId
             (Type::Table(target_id), Type::Table(source_id)) => {
-                self.is_subtype(source_id.symbol(), target_id.symbol())
+                self.is_subtype(*source_id, *target_id)
             }
 
             // Case B: 泛型实例的继承 (List<Animal> vs List<Dog>)
-            // [New] 泛型协变检查
             (
                 Type::GenericInstance {
                     base: target_base,
@@ -26,9 +26,11 @@ impl<'a> Analyzer<'a> {
                     args: source_args,
                 },
             ) => {
-                // 2.1 基础类必须相同 (或者存在继承关系，暂时只处理相同的情况)
-                // 例如: 不能把 Map<String> 赋值给 List<String>
-                if target_base.symbol() != source_base.symbol() {
+                // 2.1 基础类必须相同 (List vs List)
+                // [Fix] 比较 TableId
+                if target_base != source_base {
+                    // 未来可以扩展：允许 ArrayList<T> 赋值给 List<T>
+                    // return self.is_subtype(*source_base, *target_base);
                     return false;
                 }
 
@@ -37,49 +39,46 @@ impl<'a> Analyzer<'a> {
                     return false;
                 }
 
-                // 2.3 [核心] 逐个检查泛型参数的兼容性 (协变)
-                // 规则：Source 的参数必须是 Target 参数的子类
-                // 即: List<Dog> 可以赋值给 List<Animal>，因为 Dog 是 Animal
+                // 2.3 泛型参数协变检查
                 for (t_arg, s_arg) in target_args.iter().zip(source_args.iter()) {
-                    // 递归调用 check_type_compatibility
                     if !self.check_type_compatibility(t_arg, s_arg) {
                         return false;
                     }
                 }
-
                 true
             }
 
-            // Case C: 数组的协变 (Array<Dog> -> Array<Animal>)
-            // 如果你的 Type::Array 是独立的枚举，也要加类似逻辑
-            (Type::Array(t_inner), Type::Array(s_inner)) => {
-                self.check_type_compatibility(t_inner, s_inner)
-            }
-
+            // Case C: 模块类型兼容性 (通常模块不能赋值，或者是单例)
+            // (Type::Module(id1), Type::Module(id2)) => id1 == id2,
             _ => false,
         }
     }
 
-    /// [New] 递归检查 source 是否继承自 target
-    pub fn is_subtype(&self, child_sym: Symbol, target_sym: Symbol) -> bool {
-        // 递归基：如果 ID 相等，就是子类型 (Self is subtype of Self)
-        if child_sym == target_sym {
+    /// [Refactor] 递归检查 source 是否继承自 target
+    /// 使用 TableId 进行精确匹配 (解决同名不同文件的问题)
+    pub fn is_subtype(&self, child_id: TableId, target_id: TableId) -> bool {
+        // 递归基：ID 完全相等 (同一个文件的同一个类)
+        if child_id == target_id {
             return true;
         }
 
-        // 查找 Child 的定义
-        if let Some(info) = self.tables.get(&child_sym) {
-            // 看看它有没有父类
+        // 1. 查找 Child 的定义 (支持跨文件查找)
+        if let Some(info) = self.find_table_info(child_id) {
+            // 2. 看看它有没有父类
             if let Some(parent_type) = &info.parent {
-                // 获取父类的 Symbol
-                if let Some(parent_sym) = parent_type.get_base_symbol() {
-                    // 递归检查：父类是不是目标类型的子类？
-                    return self.is_subtype(parent_sym, target_sym);
-                }
+                // 3. 提取父类 ID
+                // 注意：resolve 阶段已经保证 parent 是 Table 或 GenericInstance
+                let parent_id = match parent_type {
+                    Type::Table(id) => *id,
+                    Type::GenericInstance { base, .. } => *base,
+                    _ => return false,
+                };
+
+                // 4. 递归检查
+                return self.is_subtype(parent_id, target_id);
             }
         }
 
-        // 查不到定义或没有父类，说明继承链断了，匹配失败
         false
     }
 
@@ -90,8 +89,8 @@ impl<'a> Analyzer<'a> {
             return;
         }
 
-        let expected_str = expected.display(&self.ctx.interner).to_string();
-        let found_str = found.display(&self.ctx.interner).to_string();
+        let expected_str = expected.display(&self.ctx).to_string();
+        let found_str = found.display(&self.ctx).to_string();
 
         self.report(
             span,

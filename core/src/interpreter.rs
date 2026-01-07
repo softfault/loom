@@ -1,17 +1,20 @@
 // src/interpreter.rs
 
 pub mod environment;
+pub mod errors;
 pub mod evaluate;
 pub mod native;
 pub mod value;
 
-use crate::analyzer::TableId; // [New]
+use crate::analyzer::TableId;
 use crate::analyzer::resolve_module_path;
 use crate::ast::*;
 use crate::context::Context;
-use crate::source::FileId; // [New]
+use crate::source::FileId;
 use crate::utils::Symbol;
 use environment::Environment;
+// [New] 引入具体的错误类型
+use errors::RuntimeErrorKind;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -23,7 +26,8 @@ use value::{Instance, Value};
 pub enum EvalResult {
     Ok(Value),
     Return(Value),
-    Err(String),
+    // [Refactor] 结构化错误
+    Err(RuntimeErrorKind),
     Break,
     Continue,
 }
@@ -33,7 +37,8 @@ impl EvalResult {
         match self {
             EvalResult::Ok(v) => Ok(v),
             EvalResult::Return(v) => Ok(v),
-            EvalResult::Err(e) => Err(e),
+            // 使用 Display trait 格式化错误
+            EvalResult::Err(kind) => Err(kind.to_string()),
             // Break/Continue 不能逃逸到函数之外
             EvalResult::Break | EvalResult::Continue => {
                 Err("Error: 'break' or 'continue' outside of loop".into())
@@ -45,56 +50,76 @@ impl EvalResult {
 pub struct Interpreter<'a> {
     pub ctx: &'a mut Context,
 
-    // 全局环境
+    // 内置环境 (包含 print, int 等)
+    // 这是所有模块的"爷爷"
+    pub builtins: Rc<RefCell<Environment>>,
+
+    // 全局环境 -> 指向"当前正在执行的模块的全局环境"
     pub globals: Rc<RefCell<Environment>>,
 
-    // 当前环境
+    // 当前局部环境 (函数调用时会变)
     pub environment: Rc<RefCell<Environment>>,
 
-    // [修改] Table 定义注册表
-    // Key: TableId (FileId, Symbol) -> Value: Rc<AST>
-    // 这些定义由 Driver 在启动前注入 (包括 Main 和所有 Module)
+    // 模块缓存
+    // 防止重复加载，解决循环依赖
+    // Key: FileId -> Value: Value::Module
+    pub module_cache: HashMap<FileId, Value>,
+
+    // 模块完整 AST (有序执行用)
+    // Key: FileId -> Value: Rc<Program>
+    pub module_programs: HashMap<FileId, Rc<Program>>,
+
+    // AST 注册表
     pub table_definitions: HashMap<TableId, Rc<TableDefinition>>,
+    pub function_definitions: HashMap<(FileId, Symbol), Rc<MethodDefinition>>,
 
-    // 当前正在执行的文件的路径 (用于解析相对路径 import)
     pub current_file_path: PathBuf,
-
-    // [New] 主文件的 ID，用于寻找入口 Main Table
     pub main_file_id: FileId,
+    pub current_file_id: FileId, // 当前执行文件 ID
 }
 
 impl<'a> Interpreter<'a> {
-    // [修改] 增加 main_file_id 参数
     pub fn new(ctx: &'a mut Context, main_file_path: PathBuf, main_file_id: FileId) -> Self {
-        let globals = Rc::new(RefCell::new(Environment::new()));
-
-        globals.borrow_mut().define(
+        // 1. 初始化内置环境
+        let builtins = Rc::new(RefCell::new(Environment::new()));
+        builtins.borrow_mut().define(
             ctx.intern("print"),
             Value::NativeFunction(crate::interpreter::native::native_print),
         );
+        // 这里还可以 define("int", Value::Table(primitive_int)) 等
 
-        // 依然保留 path 处理，因为 resolve_module_path 需要用到 current_file_path
-        // 但不再调用 source_manager.load_file 了
+        // 2. 初始化 Main 模块的环境
+        // Main 的父环境是 builtins
+        let main_env = Rc::new(RefCell::new(Environment::with_enclosing(builtins.clone())));
+
         let abs_main_path = main_file_path.canonicalize().unwrap_or(main_file_path);
 
         Self {
             ctx,
-            globals: globals.clone(),
-            environment: globals,
+            builtins: builtins.clone(),
+            globals: main_env.clone(),     // 初始 globals 是 Main
+            environment: main_env.clone(), // 初始 env 也是 Main
+            module_cache: HashMap::new(),
             table_definitions: HashMap::new(),
+            function_definitions: HashMap::new(),
+            module_programs: HashMap::new(),
             current_file_path: abs_main_path,
-            main_file_id, // 直接使用传入的 ID
+            current_file_id: main_file_id,
+            main_file_id,
         }
     }
 
-    /// === 1. 程序入口 ===
     pub fn eval_program(&mut self, program: &Program) -> Result<Value, String> {
-        // Step 1: 执行顶层语句 (主要处理 use)
-        // 注意：Table 定义已经由 Driver 注入到了 self.table_definitions，
-        // 所以这里只需要处理 Use 语句来绑定变量。
+        // Step 1: 把 Main 放入缓存
+        // 这样 Main 自己 import 自己（虽然少见）或者是循环依赖时也能工作
+        let main_module_val = Value::Module(self.main_file_id, self.globals.clone());
+        self.module_cache.insert(self.main_file_id, main_module_val);
+
+        // Step 2: 执行顶层代码 (定义类、函数、变量、Use)
+        // 此时 self.globals 指向 Main 的环境
         self.run_top_level(program)?;
 
-        // Step 2: 执行入口 [Main]
+        // Step 3: 执行 Main 入口
         self.run_main_entry()
     }
 
@@ -104,21 +129,41 @@ impl<'a> Interpreter<'a> {
         for item in &program.definitions {
             match item {
                 TopLevelItem::Table(def) => {
-                    // [Fix] 将当前文件定义的 Table 注册到全局变量中
-                    // 这样代码里才能直接使用 Dog()
-                    // 使用 self.main_file_id，因为 run_top_level 目前只运行主程序
-                    let table_id = TableId(self.main_file_id, def.name);
+                    let table_id = TableId(self.current_file_id, def.name);
                     let val = Value::Table(table_id);
-
-                    // 注册到全局环境
                     self.globals.borrow_mut().define(def.name, val);
                 }
+
+                TopLevelItem::Function(func_def) => {
+                    let val = Value::Function(
+                        self.current_file_id, // 确保这是当前文件的 ID
+                        func_def.name,
+                        self.globals.clone(), // <--- 捕获！
+                    );
+                    self.globals.borrow_mut().define(func_def.name, val);
+                }
+
+                TopLevelItem::Field(field_def) => {
+                    let val = if let Some(expr) = &field_def.value {
+                        match self.evaluate(expr) {
+                            EvalResult::Ok(v) => v,
+                            // [Fix] 错误转换
+                            EvalResult::Err(e) => return Err(e.to_string()),
+                            _ => return Err("Control flow error in global init".into()),
+                        }
+                    } else {
+                        Value::Nil
+                    };
+                    self.globals.borrow_mut().define(field_def.name, val);
+                }
+
                 TopLevelItem::Use(stmt) => self.bind_module(stmt)?,
             }
         }
         Ok(())
     }
 
+    // [Refactor] 真正的模块加载逻辑
     fn bind_module(&mut self, stmt: &UseStatement) -> Result<(), String> {
         let module_name_sym = stmt.path.last().unwrap();
         let bind_name = stmt.alias.unwrap_or(*module_name_sym);
@@ -135,80 +180,102 @@ impl<'a> Interpreter<'a> {
             .unwrap_or(&self.ctx.root_dir);
 
         // 1. 解析路径
-        if let Some(target_path) =
-            resolve_module_path(self.ctx, &stmt.anchor, &path_segments, current_dir)
-        {
-            let abs_path = target_path.canonicalize().unwrap_or(target_path);
+        let target_path = resolve_module_path(self.ctx, &stmt.anchor, &path_segments, current_dir)
+            .ok_or_else(|| format!("Module not found: {:?}", path_segments))?;
+        let abs_path = target_path.canonicalize().unwrap_or(target_path);
 
-            // 2. [关键] 获取 FileId
-            // Driver 已经加载过这个文件了，load_file 会直接返回已有的 ID
-            let file_id = self
-                .ctx
-                .source_manager
-                .load_file(&abs_path)
-                .map_err(|e| format!("Failed to load module file: {}", e))?;
+        // 2. 加载文件 (获取 FileId)
+        let file_id = self
+            .ctx
+            .source_manager
+            .load_file(&abs_path)
+            .map_err(|e| format!("IO Error: {}", e))?;
 
-            // 3. 创建 Value::Module(FileId)
-            let module_val = Value::Module(file_id);
-
-            // 4. 绑定到全局变量
-            self.globals.borrow_mut().define(bind_name, module_val);
-            Ok(())
+        // 3. [Check Cache] 检查是否已加载
+        let module_val = if let Some(cached) = self.module_cache.get(&file_id) {
+            cached.clone()
         } else {
-            Err(format!(
-                "Runtime Error: Module not found {:?} (searched from {:?})",
-                path_segments, current_dir
-            ))
-        }
+            // 4. [Load & Exec] 如果没加载，执行加载流程
+            self.load_and_evaluate_module(file_id, abs_path)?
+        };
+
+        // 5. 绑定到当前环境
+        self.globals.borrow_mut().define(bind_name, module_val);
+        Ok(())
+    }
+
+    /// 加载并执行模块
+    fn load_and_evaluate_module(
+        &mut self,
+        file_id: FileId,
+        path: PathBuf,
+    ) -> Result<Value, String> {
+        // A. 创建新环境
+        let module_env = Rc::new(RefCell::new(Environment::with_enclosing(
+            self.builtins.clone(),
+        )));
+        let module_val = Value::Module(file_id, module_env.clone());
+        self.module_cache.insert(file_id, module_val.clone());
+
+        // B. 保存上下文
+        let prev_globals = self.globals.clone();
+        let prev_env = self.environment.clone();
+        let prev_path = self.current_file_path.clone();
+        let prev_file_id = self.current_file_id;
+
+        // C. 切换上下文
+        self.globals = module_env.clone();
+        self.environment = module_env;
+        self.current_file_path = path;
+        self.current_file_id = file_id;
+
+        // D. 获取完整 AST
+        let program = self.module_programs.get(&file_id).cloned().ok_or_else(|| {
+            format!(
+                "Runtime: AST for module {:?} not found (Driver issue)",
+                file_id
+            )
+        })?;
+
+        // E. 执行
+        let run_result = self.run_top_level(&program);
+
+        // F. 恢复上下文
+        self.globals = prev_globals;
+        self.environment = prev_env;
+        self.current_file_path = prev_path;
+        self.current_file_id = prev_file_id;
+
+        run_result?;
+        Ok(module_val)
     }
 
     // --- Execution Phase ---
 
     fn run_main_entry(&mut self) -> Result<Value, String> {
-        let main_sym = self.ctx.intern("Main");
-        let main_table_id = TableId(self.main_file_id, main_sym);
+        let main_sym = self.ctx.intern("main");
 
-        // 查找定义
-        let main_def = self
-            .table_definitions
-            .get(&main_table_id)
-            .cloned()
-            .ok_or_else(|| "Runtime Error: No [Main] table found in entry file.".to_string())?;
-
-        // 实例化 Main
-        let main_instance = match self.instantiate_table(&main_def, self.main_file_id) {
-            EvalResult::Ok(v) => v,
-            // 实例化过程中不能 return, break, continue
-            EvalResult::Return(_) | EvalResult::Break | EvalResult::Continue => {
-                return Err(
-                    "Runtime Error: Unexpected control flow during Main instantiation".into(),
-                );
+        // 1. 在全局环境 (Globals) 中查找 main 函数
+        let main_func = match self.globals.borrow().get(main_sym) {
+            Some(v) => v,
+            None => {
+                // 如果没有 main 函数，对于脚本来说也是合法的 (纯副作用脚本)
+                return Ok(Value::Unit);
             }
-            EvalResult::Err(e) => return Err(e),
         };
 
-        let main_method_name = self.ctx.intern("main");
-
-        // 调用 main()
-        match self.call_method(main_instance, main_method_name, &[]) {
-            // main 函数正常执行完毕
+        // 2. 调用 main()
+        match self.call_value(main_func, &[], None) {
             EvalResult::Ok(v) => Ok(v),
-            // main 函数显式 return
             EvalResult::Return(v) => Ok(v),
-
-            // 错误：break/continue 逃逸到了 main 之外
-            EvalResult::Break | EvalResult::Continue => {
-                Err("Runtime Error: 'break' or 'continue' found outside of loop".into())
-            }
-            EvalResult::Err(e) => Err(e),
+            EvalResult::Err(e) => Err(e.to_string()),
+            _ => Err("Runtime Error: Control flow escape".into()),
         }
     }
 
     /// === 2. 实例化 Table ===
-    /// file_id: 该 Table 定义所在的文件 ID (用于构造 Instance 的 TableId)
     fn instantiate_table(&mut self, def: &TableDefinition, file_id: FileId) -> EvalResult {
         let mut fields = HashMap::new();
-
         let caller_env = self.environment.clone();
 
         // 切换到全局环境执行字段初始化
@@ -219,18 +286,14 @@ impl<'a> Interpreter<'a> {
                 let value = if let Some(expr) = &field_def.value {
                     match self.evaluate(expr) {
                         EvalResult::Ok(v) => v,
-
-                        // [Fix] 处理所有控制流逃逸
-                        // 字段初始化不能 Return，也不能 Break/Continue
                         EvalResult::Return(_) | EvalResult::Break | EvalResult::Continue => {
                             self.environment = caller_env;
-                            return EvalResult::Err(
-                                "Cannot use 'return', 'break', or 'continue' in field initialization".into(),
-                            );
+                            // [Fix] 结构化错误
+                            return EvalResult::Err(RuntimeErrorKind::Internal(
+                                "Control flow escapes field initialization".into(),
+                            ));
                         }
-
                         EvalResult::Err(e) => {
-                            // !!! 必须恢复环境 !!!
                             self.environment = caller_env;
                             return EvalResult::Err(e);
                         }
@@ -244,7 +307,6 @@ impl<'a> Interpreter<'a> {
 
         self.environment = caller_env;
 
-        // [修改] Instance 现在存储 TableId
         let instance = Rc::new(Instance {
             table_id: TableId(file_id, def.name), // 唯一 ID
             fields: RefCell::new(fields),
@@ -257,20 +319,23 @@ impl<'a> Interpreter<'a> {
     fn call_method(&mut self, receiver: Value, method_name: Symbol, args: &[Value]) -> EvalResult {
         let instance = match &receiver {
             Value::Instance(i) => i.clone(),
-            _ => return EvalResult::Err("Cannot call method on non-instance".into()),
+            _ => {
+                return EvalResult::Err(RuntimeErrorKind::Internal(
+                    "Cannot call method on non-instance".into(),
+                ));
+            }
         };
 
-        // [修改] 使用 instance.table_id 去查表
+        // 使用 instance.table_id 去查表
         let method_def = {
-            // 通过 TableId 查找 TableAST
             let table_def = match self.table_definitions.get(&instance.table_id) {
                 Some(d) => d,
                 None => {
                     let t_name = self.ctx.resolve_symbol(instance.table_id.symbol());
-                    return EvalResult::Err(format!(
+                    return EvalResult::Err(RuntimeErrorKind::Internal(format!(
                         "Runtime Def Missing: Table '{}' definition not found",
                         t_name
-                    ));
+                    )));
                 }
             };
 
@@ -288,25 +353,24 @@ impl<'a> Interpreter<'a> {
                 None => {
                     let m_name = self.ctx.resolve_symbol(method_name);
                     let t_name = self.ctx.resolve_symbol(instance.table_id.symbol());
-                    return EvalResult::Err(format!(
-                        "Method '{}' not found on class '{}'",
-                        m_name, t_name
-                    ));
+                    return EvalResult::Err(RuntimeErrorKind::PropertyNotFound {
+                        target_type: t_name.to_string(),
+                        property: m_name.to_string(),
+                    });
                 }
             }
         };
 
         // 准备环境
         let mut method_env = Environment::with_enclosing(self.globals.clone());
-        // [Key] self 绑定为 Instance
         method_env.define(self.ctx.intern("self"), receiver.clone());
 
         if args.len() != method_def.params.len() {
-            return EvalResult::Err(format!(
-                "Arg count mismatch: expected {}, got {}",
-                method_def.params.len(),
-                args.len()
-            ));
+            return EvalResult::Err(RuntimeErrorKind::ArgumentCountMismatch {
+                func_name: self.ctx.resolve_symbol(method_def.name).to_string(),
+                expected: method_def.params.len(),
+                found: args.len(),
+            });
         }
         for (i, param) in method_def.params.iter().enumerate() {
             method_env.define(param.name, args[i].clone());
@@ -318,7 +382,9 @@ impl<'a> Interpreter<'a> {
         let result = if let Some(body) = &method_def.body {
             self.execute_block(body)
         } else {
-            EvalResult::Err("Cannot call abstract method".into())
+            EvalResult::Err(RuntimeErrorKind::Internal(
+                "Cannot call abstract method".into(),
+            ))
         };
 
         self.environment = prev_env;
@@ -326,6 +392,79 @@ impl<'a> Interpreter<'a> {
         match result {
             EvalResult::Return(v) => EvalResult::Ok(v),
             other => other,
+        }
+    }
+
+    /// === 通用调用入口 ===
+    pub fn call_value(
+        &mut self,
+        func: Value,
+        args: &[Value],
+        _receiver: Option<Value>,
+    ) -> EvalResult {
+        match func {
+            // 1. 原生函数调用 (print)
+            Value::NativeFunction(f) => match f(self.ctx, args) {
+                Ok(v) => EvalResult::Ok(v),
+                // [Fix] 错误传播
+                Err(e) => EvalResult::Err(e),
+            },
+
+            // 2. 顶层函数调用 (用户定义)
+            Value::Function(file_id, func_name, captured_env) => {
+                let func_def = match self.function_definitions.get(&(file_id, func_name)) {
+                    Some(def) => def.clone(),
+                    None => {
+                        return EvalResult::Err(RuntimeErrorKind::Internal(format!(
+                            "Function AST not found"
+                        )));
+                    }
+                };
+
+                // C. 准备环境 (Context Switch)
+                let mut func_env = Environment::with_enclosing(captured_env.clone());
+
+                // 参数检查
+                if args.len() != func_def.params.len() {
+                    return EvalResult::Err(RuntimeErrorKind::ArgumentCountMismatch {
+                        func_name: self.ctx.resolve_symbol(func_name).to_string(),
+                        expected: func_def.params.len(),
+                        found: args.len(),
+                    });
+                }
+
+                for (i, param) in func_def.params.iter().enumerate() {
+                    func_env.define(param.name, args[i].clone());
+                }
+
+                // D. 切换上下文并执行
+                let prev_env = self.environment.clone();
+                let prev_globals = self.globals.clone(); // 保存当前模块环境
+
+                self.environment = Rc::new(RefCell::new(func_env));
+                self.globals = captured_env;
+
+                // E. 执行
+                let result = if let Some(body) = &func_def.body {
+                    self.execute_block(body)
+                } else {
+                    EvalResult::Ok(Value::Nil)
+                };
+
+                // F. 恢复上下文
+                self.environment = prev_env;
+                self.globals = prev_globals; // 恢复回调用者的模块环境
+
+                match result {
+                    EvalResult::Return(v) => EvalResult::Ok(v),
+                    other => other,
+                }
+            }
+
+            // 3. 错误处理
+            _ => EvalResult::Err(RuntimeErrorKind::NotCallable(
+                func.to_string(&self.ctx.interner),
+            )),
         }
     }
 }

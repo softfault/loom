@@ -1,0 +1,6 @@
+[identity<T>(val: T) T]
+    return val
+
+[Main]
+main = () int
+    print(identity<str>("hello"))

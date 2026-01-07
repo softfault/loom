@@ -1,0 +1,7 @@
+[Lib]
+# 定义一个简单的 Table，仅用于测试 Analyzer 是否能读取到它
+name = "Library"
+
+# 定义一个简单的计算方法
+add = (a: int, b: int) int
+    return a + b

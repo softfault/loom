@@ -43,8 +43,8 @@ impl<'a> Analyzer<'a> {
         for (i, expr) in elements.iter().enumerate().skip(1) {
             let ty = self.check_expression(expr);
             if !first_ty.is_assignable_from(&ty) {
-                let expected_str = first_ty.display(&self.ctx.interner).to_string();
-                let found_str = ty.display(&self.ctx.interner).to_string();
+                let expected_str = first_ty.display(&self.ctx).to_string();
+                let found_str = ty.display(&self.ctx).to_string();
 
                 self.report(
                     expr.span,
@@ -79,7 +79,7 @@ impl<'a> Analyzer<'a> {
                 if ty == Type::Int || ty == Type::Float {
                     ty
                 } else {
-                    let ty_str = ty.display(&self.ctx.interner).to_string();
+                    let ty_str = ty.display(&self.ctx).to_string();
                     self.report(
                         operand.span,
                         SemanticErrorKind::InvalidUnaryOperand {
@@ -94,7 +94,7 @@ impl<'a> Analyzer<'a> {
                 if ty == Type::Bool {
                     Type::Bool
                 } else {
-                    let ty_str = ty.display(&self.ctx.interner).to_string();
+                    let ty_str = ty.display(&self.ctx).to_string();
                     self.report(
                         operand.span,
                         SemanticErrorKind::InvalidUnaryOperand {
@@ -151,8 +151,8 @@ impl<'a> Analyzer<'a> {
                 }
 
                 // 错误处理
-                let l_str = left.display(&self.ctx.interner).to_string();
-                let r_str = right.display(&self.ctx.interner).to_string();
+                let l_str = left.display(&self.ctx).to_string();
+                let r_str = right.display(&self.ctx).to_string();
                 self.report(
                     span,
                     SemanticErrorKind::InvalidBinaryOperand {
@@ -172,8 +172,8 @@ impl<'a> Analyzer<'a> {
                     return Type::Float;
                 }
 
-                let l_str = left.display(&self.ctx.interner).to_string();
-                let r_str = right.display(&self.ctx.interner).to_string();
+                let l_str = left.display(&self.ctx).to_string();
+                let r_str = right.display(&self.ctx).to_string();
                 self.report(
                     span,
                     SemanticErrorKind::InvalidBinaryOperand {
@@ -196,8 +196,8 @@ impl<'a> Analyzer<'a> {
                 if left.is_numeric() && right.is_numeric() {
                     Type::Bool
                 } else {
-                    let l_str = left.display(&self.ctx.interner).to_string();
-                    let r_str = right.display(&self.ctx.interner).to_string();
+                    let l_str = left.display(&self.ctx).to_string();
+                    let r_str = right.display(&self.ctx).to_string();
                     self.report(
                         span,
                         SemanticErrorKind::InvalidBinaryOperand {
@@ -215,8 +215,8 @@ impl<'a> Analyzer<'a> {
                 if left == Type::Bool && right == Type::Bool {
                     Type::Bool
                 } else {
-                    let l_str = left.display(&self.ctx.interner).to_string();
-                    let r_str = right.display(&self.ctx.interner).to_string();
+                    let l_str = left.display(&self.ctx).to_string();
+                    let r_str = right.display(&self.ctx).to_string();
                     self.report(
                         span,
                         SemanticErrorKind::InvalidBinaryOperand {

@@ -18,7 +18,7 @@ pub use scope::ScopeManager;
 pub use tableid::TableId;
 pub use types::{FunctionSignature, Type};
 
-use crate::analyzer::info::SymbolKind;
+use crate::analyzer::info::{FunctionInfo, GlobalVarInfo, SymbolKind};
 use crate::ast::{NodeId, Program};
 use crate::context::Context;
 use crate::source::FileId;
@@ -32,7 +32,9 @@ pub struct Analyzer<'a> {
 
     /// 存储所有 Table 的元数据 (Loom 核心数据结构)
     /// Key: Table Name
-    pub tables: HashMap<Symbol, TableInfo>,
+    pub tables: HashMap<TableId, TableInfo>,
+    pub functions: HashMap<Symbol, FunctionInfo>,
+    pub globals: HashMap<Symbol, GlobalVarInfo>,
 
     /// 收集到的错误 (非致命)
     pub errors: Vec<SemanticError>,
@@ -54,6 +56,8 @@ impl<'a> Analyzer<'a> {
             ctx,
             scopes: ScopeManager::new(),
             tables: Default::default(),
+            functions: HashMap::new(),
+            globals: HashMap::new(),
             errors: Vec::new(),
             current_return_type: None,
             current_file_id: file_id, // 直接存
@@ -108,23 +112,20 @@ impl<'a> Analyzer<'a> {
     }
 
     /// 查找 Table 定义
-    /// 优先在当前文件找，如果找不到，去所有已加载的模块里找 (处理导入的类)
-    fn find_table_info(&self, id: TableId) -> Option<&TableInfo> {
-        let TableId(file_id, sym) = id;
-
-        // 1. 如果 file_id 就是当前文件，直接查 self.tables
-        if file_id == self.current_file_id {
-            return self.tables.get(&sym);
+    fn find_table_info(&self, id: TableId) -> Option<TableInfo> {
+        // 1. 尝试直接在本地 tables 里找
+        if let Some(info) = self.tables.get(&id) {
+            return Some(info.clone());
         }
 
-        // 2. 如果是其他文件，去 ModuleInfo 里查
-        // 我们需要反查 file_id 对应的 ModuleInfo
-        // (性能优化：Context 可以加一个 file_id -> ModuleInfo 的索引，这里先遍历)
-        for module in self.ctx.modules.values() {
-            if module.file_id == file_id {
-                return module.exports.get(&sym);
+        // 2. 如果没找到，去 ctx.modules 查
+        if let Some(path) = self.ctx.source_manager.get_file_path(id.file_id()) {
+            if let Some(module) = self.ctx.modules.get(path) {
+                // [Fix] 直接用 id 查
+                return module.tables.get(&id).cloned();
             }
         }
+
         None
     }
 

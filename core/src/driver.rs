@@ -43,27 +43,27 @@ impl Driver {
         self.run_pipeline(file_id, abs_path)
     }
 
+    // core/src/driver.rs
+
     /// 核心编译管线
     fn run_pipeline(&mut self, file_id: FileId, path: PathBuf) -> Result<Value, String> {
-        // 从 Context 获取源码引用，避免 clone 整个 String
         let source = self.ctx.source_manager.get_file(file_id).src.as_str();
 
-        // === Step 1: Parsing ===
+        // ==========================================
+        // Step 1: Parsing (语法解析)
+        // ==========================================
         let lexer = Lexer::new(source);
-
         let mut parser = Parser::new(source, lexer, file_id, &mut self.ctx.interner);
 
+        // 解析出主程序的 AST (Owned)
         let program = match parser.parse_program() {
             Ok(p) => p,
             Err(e) => {
-                // Parser Error 处理
-                // 假设 e 是 ParseError { span, message, .. }
                 let msg = format!("Parse Error: {}", e.message);
                 return Err(self.format_diagnostic(file_id, e.span, &msg));
             }
         };
 
-        // 检查 Parser 的非致命错误
         if !parser.errors.is_empty() {
             let mut error_msgs = Vec::new();
             for err in &parser.errors {
@@ -76,63 +76,80 @@ impl Driver {
             return Err(error_msgs.join("\n\n"));
         }
 
-        // === Step 2: Analysis (Collect -> Resolve -> Check) ===
-
-        // [Key Change] Analyzer::new 现在接收 FileId
+        // ==========================================
+        // Step 2: Analysis (语义分析)
+        // ==========================================
         let mut analyzer = Analyzer::new(&mut self.ctx, file_id);
 
-        // Pass 1: Collect
+        // 注意：analyzer 会递归加载 import 的模块，并把它们的 AST 缓存在 ctx.modules 里
         analyzer.collect_program(&program);
-
-        // Pass 2: Resolve (只有在 Pass 1 没有致命错误时才继续，或者继续跑为了收集更多错误)
         analyzer.resolve_hierarchy();
-
-        // Pass 3: Check
         analyzer.check_program(&program);
 
-        // 统一处理 Analyzer 阶段的所有错误
         if !analyzer.errors.is_empty() {
             let error_msgs: Vec<String> = analyzer
                 .errors
                 .iter()
                 .map(|e| self.format_semantic_error(e))
                 .collect();
-
             return Err(error_msgs.join("\n\n"));
         }
 
-        // === Step 3: Interpretation ===
+        // ==========================================
+        // Step 3: Interpretation (解释执行)
+        // ==========================================
 
-        // [New] 准备 AST 注册表
-        // Interpreter 需要所有 Table 的 AST 才能运行
+        // 准备 Interpreter 所需的数据结构
         let mut table_defs = HashMap::new();
+        let mut func_defs = HashMap::new();
+        let mut module_programs = HashMap::new();
 
-        // 3.1 注入主程序 (Main File) 的定义
-        for item in &program.definitions {
-            if let TopLevelItem::Table(def) = item {
-                // 主程序的定义，使用当前的 file_id
-                let id = TableId(file_id, def.name);
-                table_defs.insert(id, Rc::new(def.clone()));
-            }
-        }
-
-        // 3.2 注入所有已加载模块 (Modules) 的定义
-        // Analyzer 已经把它们分析好并存在 ctx.modules 里了
+        // --- 3.1 注入已加载模块 (Modules) 的定义 ---
+        // 这些模块已经在 Analyzer 阶段被加载到了 self.ctx.modules
         for module in self.ctx.modules.values() {
+            // A. 注入完整 Program AST (用于 Interpreter 顺序执行模块)
+            module_programs.insert(module.file_id, module.program.clone());
+
+            // B. 注入 Table AST (碎片化查找)
             for (name, ast_def) in &module.ast_definitions {
                 let id = TableId(module.file_id, *name);
                 table_defs.insert(id, ast_def.clone());
             }
+
+            // C. 注入 Function AST (碎片化查找)
+            for (name, ast_func) in &module.ast_functions {
+                func_defs.insert((module.file_id, *name), ast_func.clone());
+            }
         }
 
-        // 3.3 初始化 Interpreter 并注入定义
-        // 传入 path 和 file_id
+        // --- 3.2 注入主程序 (Main) 的定义 ---
+        // Main 的 Program 目前还在我们手里 (program 变量)，需要封装成 Rc
+        let main_program_rc = Rc::new(program.clone()); // 这里的 Clone 无法避免，除非重构 Parser 返回 Rc
+        module_programs.insert(file_id, main_program_rc);
+
+        for item in &program.definitions {
+            match item {
+                TopLevelItem::Table(def) => {
+                    let id = TableId(file_id, def.name);
+                    table_defs.insert(id, Rc::new(def.clone()));
+                }
+                TopLevelItem::Function(func_def) => {
+                    func_defs.insert((file_id, func_def.name), Rc::new(func_def.clone()));
+                }
+                _ => {}
+            }
+        }
+
+        // --- 3.3 初始化 Interpreter ---
         let mut interpreter = Interpreter::new(&mut self.ctx, path, file_id);
 
-        // [关键] 这一步之前漏了，所以找不到 Main
+        // 填充数据
         interpreter.table_definitions = table_defs;
+        interpreter.function_definitions = func_defs;
+        interpreter.module_programs = module_programs;
 
-        // 3.4 运行
+        // --- 3.4 运行 ---
+        // eval_program 会先执行 Main 的 TopLevel，然后尝试调用 main() 函数
         match interpreter.eval_program(&program) {
             Ok(v) => Ok(v),
             Err(e) => Err(format!("Runtime Error: {}", e)),

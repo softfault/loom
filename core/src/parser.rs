@@ -251,38 +251,41 @@ impl<'a> Parser<'a> {
         let mut definitions = Vec::new();
 
         while !self.is_at_end() {
-            // 跳过顶层的换行
+            // 跳过空行
             while self.match_token(&[TokenKind::Newline]) {
                 continue;
             }
-
             if self.is_at_end() {
                 break;
             }
 
+            // 分流逻辑
             if self.check(TokenKind::Use) {
-                // 调用 src/parser/top.rs 里的逻辑
                 let use_stmt = self.parse_use_statement()?;
                 definitions.push(TopLevelItem::Use(use_stmt));
             } else if self.check(TokenKind::LeftBracket) {
-                // 调用 src/parser/top.rs 里的逻辑
-                let table = self.parse_table_definition()?;
-                definitions.push(TopLevelItem::Table(table));
+                // 处理 [Class] 或 [Func]
+                let item = self.parse_definition()?;
+                definitions.push(item);
+            } else if self.check(TokenKind::Identifier) {
+                // [New] Phase 2: 处理顶层变量
+                // 只要是 Identifier 开头，在顶层就认为是字段定义
+                let field = self.parse_top_level_field()?;
+                definitions.push(TopLevelItem::Field(field));
             } else {
-                // 错误恢复
+                // 错误处理
                 let err_token = self.peek();
                 self.errors.push(ParseError {
-                    expected: "[ or use".into(),
+                    expected: "[ or use or identifier".into(),
                     found: err_token.kind,
                     span: err_token.span,
-                    message: "Expected table definition ([...]) or use statement".into(),
+                    message: "Expected definition, variable, or use statement".into(),
                 });
                 self.synchronize();
             }
         }
 
         let end_span = self.previous_span();
-
         Ok(Program {
             definitions,
             span: start_span.to(end_span),

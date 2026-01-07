@@ -18,7 +18,7 @@ impl<'a> Analyzer<'a> {
         match target_ty {
             Type::Array(inner) => {
                 if index_ty != Type::Int {
-                    let ty_str = index_ty.display(&self.ctx.interner).to_string();
+                    let ty_str = index_ty.display(&self.ctx).to_string();
                     self.report(
                         index.span,
                         SemanticErrorKind::InvalidIndexType(format!(
@@ -39,7 +39,7 @@ impl<'a> Analyzer<'a> {
                 Type::Str
             }
             _ => {
-                let ty_str = target_ty.display(&self.ctx.interner).to_string();
+                let ty_str = target_ty.display(&self.ctx).to_string();
                 self.report(target.span, SemanticErrorKind::TypeNotIndexable(ty_str));
                 Type::Error
             }
@@ -171,7 +171,7 @@ impl<'a> Analyzer<'a> {
 
             // === Case D: 其他类型不可调用 ===
             _ => {
-                let ty_str = callee_ty.display(&self.ctx.interner).to_string();
+                let ty_str = callee_ty.display(&self.ctx).to_string();
                 self.report(callee.span, SemanticErrorKind::NotCallable(ty_str));
                 Type::Error
             }
@@ -214,87 +214,147 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    // === 补全: 核心字段访问逻辑 (带泛型替换) ===
-
-    fn check_field_access(
+    // [Refactor] 主入口：分发检查逻辑
+    pub(super) fn check_field_access(
         &mut self,
         target_ty: Type,
         field: Symbol,
         span: crate::utils::Span,
     ) -> Type {
-        // 1. 提取 Base Symbol 和 泛型实参
-        // [修改] 这里需要把 Type::Module 单独拎出来处理，不要让它掉进下面的 match
-        if let Type::Module(path) = &target_ty {
-            // === 处理模块访问 ===
+        match target_ty {
+            // 1. 模块访问: import math; math.pi
+            // [Fix] 现在持有 FileId
+            Type::Module(file_id) => self.check_module_member_access(file_id, field, span),
 
-            // 1. 从 Context 中查找已加载的 ModuleInfo
-            if let Some(module_info) = self.ctx.modules.get(path) {
-                // 2. 在模块的导出列表 (exports) 中查找字段
-                if let Some(table_info) = module_info.exports.get(&field) {
-                    // [修改] 返回带有 file_id 的 Table 类型
-                    // 这样 check_call_expr 就能拿到这个 ID，进而找到正确的定义
-                    return Type::Table(TableId(module_info.file_id, table_info.name));
-                } else {
-                    // 模块加载了，但没这个名字
-                    let mod_name = path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("module");
-                    let f_name = self.ctx.resolve_symbol(field).to_string();
-                    self.report(
-                        span,
-                        SemanticErrorKind::UndefinedSymbol(format!(
-                            "Export '{}' not found in module '{}'",
-                            f_name, mod_name
-                        )),
-                    );
-                    return Type::Error;
-                }
-            } else {
-                // 理论上如果不应该发生（因为 Module 类型存在说明已经 Resolve 过了），防御性编程
-                self.report(
-                    span,
-                    SemanticErrorKind::ModuleNotFound(format!("{:?}", path)),
-                );
-                return Type::Error;
+            // 2. 实例/泛型访问: obj.field
+            Type::Table(table_id) => {
+                self.check_instance_member_access(table_id, vec![], field, span)
             }
-        }
+            Type::GenericInstance { base, args } => {
+                self.check_instance_member_access(base, args, field, span)
+            }
 
-        // 1. 提取 Base Symbol 和 泛型实参 (Args)
-        let (base_sym, generic_args) = match &target_ty {
-            Type::Table(sym) => (*sym, vec![]),
-            Type::GenericInstance { base, args } => (*base, args.clone()),
-            Type::Error => return Type::Error, // 级联错误拦截
+            // 3. 错误传播
+            Type::Error => Type::Error,
+
+            // 4. 不支持的类型
             _ => {
-                let ty_str = target_ty.display(&self.ctx.interner).to_string();
+                let ty_str = target_ty.display(self.ctx).to_string();
                 self.report(
                     span,
                     SemanticErrorKind::Custom(format!("Type '{}' does not have fields", ty_str)),
                 );
-                return Type::Error;
+                Type::Error
             }
-        };
+        }
+    }
 
-        // 2. 查找 Table 定义
-        let table_info = match self.find_table_info(base_sym) {
-            Some(info) => info.clone(),
+    /// [New] 辅助函数：处理模块成员访问
+    fn check_module_member_access(
+        &mut self,
+        file_id: crate::source::FileId, // [Fix] 输入是 FileId
+        field: Symbol,
+        span: crate::utils::Span,
+    ) -> Type {
+        // 1. 获取文件路径
+        // 我们需要路径来查 ctx.modules (HashMap<PathBuf, ModuleInfo>)
+        // 注意：这里假设 source_manager 能拿到 Path
+        let file_path = match self.ctx.source_manager.get_file_path(file_id) {
+            Some(p) => p,
             None => {
-                let t_name = self.ctx.resolve_symbol(base_sym.symbol()).to_string();
-                self.report(span, SemanticErrorKind::UndefinedSymbol(t_name));
+                self.report(
+                    span,
+                    SemanticErrorKind::FileIOError("Invalid FileID in Module Type".into()),
+                );
                 return Type::Error;
             }
         };
 
-        // 3. 构建泛型替换映射 (Substitution Map)
+        // 2. 查找已加载的 ModuleInfo
+        let module_info = match self.ctx.modules.get(file_path) {
+            Some(info) => info,
+            None => {
+                self.report(
+                    span,
+                    SemanticErrorKind::ModuleNotFound(format!("{:?}", file_path)),
+                );
+                return Type::Error;
+            }
+        };
+
+        // 3. 依次查找导出成员
+
+        // A. 查找导出的类 (Tables)
+        // [Fix] 构造目标 TableId: (模块的文件ID, 类名)
+        let target_id = TableId(module_info.file_id, field);
+
+        // 使用构造好的 ID 去 module_info.tables 里查找
+        if let Some(_table_info) = module_info.tables.get(&target_id) {
+            // 找到了！返回这个 ID 对应的类型
+            return Type::Table(target_id);
+        }
+
+        // B. 查找导出的顶层函数 (Functions)
+        if let Some(func_info) = module_info.functions.get(&field) {
+            let params: Vec<Type> = func_info
+                .signature
+                .params
+                .iter()
+                .map(|(_, ty)| ty.clone())
+                .collect();
+
+            return Type::Function {
+                params,
+                ret: Box::new(func_info.signature.ret.clone()),
+            };
+        }
+
+        // C. 查找导出的顶层变量 (Globals)
+        if let Some(global_info) = module_info.globals.get(&field) {
+            return global_info.ty.clone();
+        }
+
+        // 4. 报错
+        let mod_name = file_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("module");
+        let f_name = self.ctx.resolve_symbol(field).to_string();
+
+        self.report(
+            span,
+            SemanticErrorKind::UndefinedSymbol(format!(
+                "Export '{}' not found in module '{}'",
+                f_name, mod_name
+            )),
+        );
+        Type::Error
+    }
+
+    /// [New] 辅助函数：处理实例/对象成员访问
+    fn check_instance_member_access(
+        &mut self,
+        base_table_id: TableId,
+        generic_args: Vec<Type>,
+        field: Symbol,
+        span: crate::utils::Span,
+    ) -> Type {
+        // 1. 查找 Table 定义
+        // find_table_info 应该支持跨文件查找 (根据 TableId 里的 file_id)
+        let table_info = match self.find_table_info(base_table_id) {
+            Some(info) => info.clone(),
+            None => return Type::Error,
+        };
+
+        // 2. 构建替换表 (Substitution Map)
         let mut type_mapping = std::collections::HashMap::new();
 
-        // 校验泛型参数数量
-        if generic_args.len() != table_info.generic_params.len() {
-            let t_name = self.ctx.resolve_symbol(base_sym.symbol()).to_string();
-
-            // 如果是 Type::Table 但表其实有泛型，说明用户用了 Raw Type (如 List 而不是 List<int>)
-            // 这种情况下，generic_args 为空。我们可以视作 Error，或者视为 List<Any>。
-            // 这里我们严格报错：
+        if generic_args.len() == table_info.generic_params.len() {
+            for (i, param_sym) in table_info.generic_params.iter().enumerate() {
+                type_mapping.insert(*param_sym, generic_args[i].clone());
+            }
+        } else {
+            let t_name = self.ctx.resolve_symbol(base_table_id.symbol()).to_string();
             self.report(
                 span,
                 SemanticErrorKind::GenericArgumentCountMismatch {
@@ -306,55 +366,39 @@ impl<'a> Analyzer<'a> {
             return Type::Error;
         }
 
-        // 建立映射: T -> int, U -> str
-        for (i, param_sym) in table_info.generic_params.iter().enumerate() {
-            type_mapping.insert(*param_sym, generic_args[i].clone());
+        // 3. 查找成员并应用替换
+
+        // Case A: 查找字段
+        if let Some(field_info) = table_info.fields.get(&field) {
+            return field_info.ty.substitute(&type_mapping);
         }
 
-        // 4. 查找成员 (Field or Method)
+        // Case B: 查找方法
+        if let Some(method_info) = table_info.methods.get(&field) {
+            let sig = &method_info.signature;
 
-        // A. 查找字段 (Field)
-        if let Some(field_ty) = table_info.fields.get(&field) {
-            // [Key Step] 核心：即时替换
-            // 比如定义是 item: T, mapping 是 T -> int，这里返回 int
-            return field_ty.ty.substitute(&type_mapping);
-        }
-
-        // B. 查找方法 (Method)
-        if let Some(method_sig) = table_info.methods.get(&field) {
-            // [Key Step] 方法签名也要替换
-            // 原始签名: (item: T) -> bool
-            // 替换后:   (item: int) -> bool
-
-            let new_params = method_sig
-                .signature
+            // 替换参数类型
+            let new_params = sig
                 .params
                 .iter()
-                .map(|(_, p_ty)| p_ty.substitute(&type_mapping))
+                .map(|(_, ty)| ty.substitute(&type_mapping))
                 .collect();
 
-            let new_ret = method_sig.signature.ret.substitute(&type_mapping);
+            // 替换返回值类型
+            let new_ret = sig.ret.substitute(&type_mapping);
 
-            // 返回一个 Function 类型
-            // 注意：check_call_expr 会拿到这个 Function 类型并检查参数
             return Type::Function {
                 params: new_params,
                 ret: Box::new(new_ret),
             };
         }
 
-        // 5. 未找到成员
-        let t_name = self.ctx.resolve_symbol(base_sym.symbol()).to_string();
+        // 4. 没找到
         let f_name = self.ctx.resolve_symbol(field).to_string();
-
         self.report(
             span,
-            SemanticErrorKind::Custom(format!(
-                "Property '{}' does not exist on type '{}'",
-                f_name, t_name
-            )),
+            SemanticErrorKind::Custom(format!("Member '{}' not found", f_name)),
         );
-
         Type::Error
     }
 
@@ -402,7 +446,7 @@ impl<'a> Analyzer<'a> {
             Type::Error => Type::Error,
 
             _ => {
-                let ty_str = func_ty.display(&self.ctx.interner).to_string();
+                let ty_str = func_ty.display(&self.ctx).to_string();
                 self.report(call_span, SemanticErrorKind::NotCallable(ty_str));
                 Type::Error
             }

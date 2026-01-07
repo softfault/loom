@@ -13,10 +13,12 @@ macro_rules! require_ok {
 mod field_access;
 
 use super::environment::Environment;
+use super::errors::RuntimeErrorKind;
 use super::value::{Instance, Value};
 use super::{EvalResult, Interpreter};
 use crate::analyzer::TableId;
 use crate::ast::*;
+use crate::source::FileId;
 use crate::utils::Symbol;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -55,7 +57,6 @@ impl<'a> Interpreter<'a> {
             // 6. 其他
             ExpressionData::Array(elements) => self.eval_array(elements),
 
-            // [Fix] 这里不再是 Hack，而是返回真正的 EvalResult::Return
             ExpressionData::Return(val) => self.eval_return(val),
 
             ExpressionData::VariableDefinition { name, init, .. } => {
@@ -70,15 +71,18 @@ impl<'a> Interpreter<'a> {
             } => self.eval_for(*iterator, iterable, body),
             ExpressionData::Break { .. } => EvalResult::Break,
             ExpressionData::Continue => EvalResult::Continue,
-            // inside evaluate() match
+
             ExpressionData::Range { start, end, .. } => {
                 let start_val = require_ok!(self.evaluate(start));
                 let end_val = require_ok!(self.evaluate(end));
-                // 这里只是生成 Range 对象，不展开成数组
                 EvalResult::Ok(Value::Range(Box::new(start_val), Box::new(end_val)))
             }
 
-            _ => EvalResult::Err(format!("Runtime: Unsupported expression {:?}", expr.data)),
+            // [Error] 不支持的表达式
+            _ => EvalResult::Err(RuntimeErrorKind::Internal(format!(
+                "Unsupported expression type: {:?}",
+                expr.data
+            ))),
         }
     }
 
@@ -89,9 +93,8 @@ impl<'a> Interpreter<'a> {
     fn eval_identifier(&mut self, sym: Symbol) -> EvalResult {
         match self.environment.borrow().get(sym) {
             Some(val) => EvalResult::Ok(val),
-            None => EvalResult::Err(format!(
-                "Runtime Error: Undefined variable '{}'",
-                self.ctx.resolve_symbol(sym)
+            None => EvalResult::Err(RuntimeErrorKind::UndefinedVariable(
+                self.ctx.resolve_symbol(sym).to_string(),
             )),
         }
     }
@@ -121,90 +124,109 @@ impl<'a> Interpreter<'a> {
         }
 
         match func {
-            // 普通原生函数 (print)
-            Value::NativeFunction(f) => EvalResult::Ok(f(self.ctx, &arg_values)),
+            // [Case A] 原生函数
+            Value::NativeFunction(_) => self.call_value(func, &arg_values, None),
 
-            // [New] 绑定原生方法 (str.len, arr.push)
+            // [Case B] 绑定原生方法 (str.len, arr.push)
             Value::BoundNativeMethod(receiver, f) => {
                 // 核心逻辑：把 receiver 插入到参数列表的最前面 (self)
                 let mut full_args = Vec::with_capacity(arg_values.len() + 1);
-                full_args.push(*receiver); // 解包 Box，把 Value 拿出来
-                full_args.extend(arg_values); // 接上用户传的参数
+                full_args.push(*receiver);
+                full_args.extend(arg_values);
 
-                EvalResult::Ok(f(self.ctx, &full_args))
+                // 这里的 f 返回 Result<Value, RuntimeErrorKind>
+                match f(self.ctx, &full_args) {
+                    Ok(v) => EvalResult::Ok(v),
+                    Err(e) => EvalResult::Err(e),
+                }
             }
 
-            // 用户自定义方法
-            Value::BoundMethod(instance, method_def) => {
-                self.call_user_method(instance, &method_def, &arg_values)
+            // [Case C] 用户自定义方法 (Bound Method)
+            Value::BoundMethod(instance, method_def, def_env) => {
+                self.call_user_method(instance, &method_def, def_env, &arg_values)
             }
 
-            // === Case D: [Fix] 构造函数调用 ===
-            // 也就是处理 `l = my_lib.Lib()` 这种情况
+            // [Case D] 顶层函数 (Top-level Function)
+            // 严谨版本：Function(FileId, Symbol, Env)
+            // 不使用 @，直接匹配解构，然后重组传给 call_value
+            Value::Function(file_id, func_name, env) => {
+                let func_val = Value::Function(file_id, func_name, env);
+                self.call_value(func_val, &arg_values, None)
+            }
+
+            // [Case E] 构造函数调用 (Table)
             Value::Table(table_id) => {
                 // 1. 查找 Table 定义
-                // Driver 已经注入了所有的定义，所以这里一定能找到 (除非 ID 错乱)
                 let def = match self.table_definitions.get(&table_id).cloned() {
                     Some(d) => d,
                     None => {
-                        return EvalResult::Err(format!(
-                            "Runtime Error: Definition for class '{}' not found",
+                        return EvalResult::Err(RuntimeErrorKind::Internal(format!(
+                            "Definition for class '{}' not found",
                             self.ctx.resolve_symbol(table_id.symbol())
-                        ));
+                        )));
                     }
                 };
 
                 // 2. 实例化
-                // 直接复用 instantiate_table 方法
-                // 它会处理字段初始化，并返回 Value::Instance
-                let instance_result = self.instantiate_table(&def, table_id.file_id());
-
-                // TODO: 未来可以在这里查找并自动调用 'init' 方法 (构造函数逻辑)
-
-                instance_result
+                self.instantiate_table(&def, table_id.file_id())
             }
 
-            _ => EvalResult::Err(format!("Trying to call a non-function: {:?}", func)),
+            // [Error] 不可调用
+            _ => EvalResult::Err(RuntimeErrorKind::NotCallable(
+                func.to_string(&self.ctx.interner),
+            )),
         }
     }
+
     fn call_user_method(
         &mut self,
         receiver: Rc<Instance>,
         method: &MethodDefinition,
+        def_env: Rc<RefCell<Environment>>, // [New] 传入定义环境
         args: &[Value],
     ) -> EvalResult {
-        let mut env = Environment::with_enclosing(self.globals.clone());
+        // 1. 构造局部环境
+        // [Key Fix] 父环境是 def_env (定义时的模块环境)
+        // 这样方法内部就能访问到它定义所在文件的全局变量了！
+        let mut env = Environment::with_enclosing(def_env.clone());
 
+        // 2. 定义 self 和参数
         env.define(self.ctx.intern("self"), Value::Instance(receiver));
 
         if args.len() != method.params.len() {
-            return EvalResult::Err(format!(
-                "Expected {} args, got {}",
-                method.params.len(),
-                args.len()
-            ));
+            return EvalResult::Err(RuntimeErrorKind::ArgumentCountMismatch {
+                func_name: self.ctx.resolve_symbol(method.name).to_string(),
+                expected: method.params.len(),
+                found: args.len(),
+            });
         }
         for (i, param) in method.params.iter().enumerate() {
             env.define(param.name, args[i].clone());
         }
 
-        let prev = self.environment.clone();
-        self.environment = Rc::new(RefCell::new(env));
+        // 3. 切换上下文 (保存 -> 切换 -> 执行 -> 恢复)
+        let prev_env = self.environment.clone();
+        let prev_globals = self.globals.clone(); // 保存当前的 globals
 
-        // 执行方法体
+        // 切换到方法内部环境
+        self.environment = Rc::new(RefCell::new(env));
+        // [Key Fix] 切换 globals 为定义该方法的模块环境
+        // 这样在方法里再调用其他顶层函数时，也能找到正确的函数
+        self.globals = def_env;
+
+        // 4. 执行方法体
         let result = if let Some(body) = &method.body {
             self.execute_block(body)
         } else {
-            EvalResult::Err("Cannot call abstract method".into())
+            EvalResult::Err(RuntimeErrorKind::Internal(
+                "Cannot call abstract method".into(),
+            ))
         };
 
-        // 恢复环境
-        self.environment = prev;
+        // 5. 恢复上下文
+        self.environment = prev_env;
+        self.globals = prev_globals;
 
-        // [重要] 这里的行为由 mod.rs 的 call_method 决定是否捕获 Return。
-        // 但如果在 evaluate 内部调用 (比如 callee 算出来是 BoundMethod)，
-        // 我们需要决定：这里是捕获 Return 还是继续冒泡？
-        // 既然这是 "调用一个函数"，那么函数的 Return 对调用者来说就是 Ok(value)。
         match result {
             EvalResult::Return(v) => EvalResult::Ok(v),
             other => other,
@@ -224,7 +246,9 @@ impl<'a> Interpreter<'a> {
         let right_val = require_ok!(self.evaluate(value_expr));
 
         if op != AssignOp::Assign {
-            return EvalResult::Err("Compound assignment not implemented yet".into());
+            return EvalResult::Err(RuntimeErrorKind::Internal(
+                "Compound assignment not implemented yet".into(),
+            ));
         }
 
         match &target.data {
@@ -251,7 +275,10 @@ impl<'a> Interpreter<'a> {
                     instance.fields.borrow_mut().insert(*field, right_val);
                     EvalResult::Ok(Value::Unit)
                 } else {
-                    EvalResult::Err("Cannot assign property on non-instance".into())
+                    EvalResult::Err(RuntimeErrorKind::TypeError {
+                        expected: "Instance".into(),
+                        found: "Non-Instance".into(), // 可以优化显示
+                    })
                 }
             }
 
@@ -268,14 +295,22 @@ impl<'a> Interpreter<'a> {
                         vec[i as usize] = right_val;
                         EvalResult::Ok(Value::Unit)
                     } else {
-                        EvalResult::Err("Index out of bounds".into())
+                        EvalResult::Err(RuntimeErrorKind::IndexOutOfBounds {
+                            index: i,
+                            len: vec.len(),
+                        })
                     }
                 } else {
-                    EvalResult::Err("Invalid index assignment".into())
+                    EvalResult::Err(RuntimeErrorKind::TypeError {
+                        expected: "Array and Int".into(),
+                        found: "Invalid Types".into(),
+                    })
                 }
             }
 
-            _ => EvalResult::Err("Invalid assignment target".into()),
+            _ => EvalResult::Err(RuntimeErrorKind::Internal(
+                "Invalid assignment target".into(),
+            )),
         }
     }
 
@@ -283,9 +318,7 @@ impl<'a> Interpreter<'a> {
     //          Section 4: Control Flow
     // ==========================================
 
-    /// 执行块：这是处理 Return, Scope, Break, Continue 的核心
     pub(super) fn execute_block(&mut self, block: &Block) -> EvalResult {
-        // 1. 进入新作用域 (Push Scope)
         let prev_env = self.environment.clone();
         self.environment = Rc::new(RefCell::new(Environment::with_enclosing(prev_env.clone())));
 
@@ -294,16 +327,9 @@ impl<'a> Interpreter<'a> {
         for stmt in &block.statements {
             let result = self.evaluate(stmt);
             match result {
-                // 正常执行：继续下一条语句
                 EvalResult::Ok(v) => {
                     last_val = v;
                 }
-
-                // [关键修改] 控制流信号 (Return, Break, Continue, Err)
-                // 遇到这些信号时，必须：
-                // 1. 立即停止当前块的执行
-                // 2. 恢复环境 (Pop Scope)
-                // 3. 将信号向上冒泡 (Bubble up) 给调用者 (比如 eval_for 或 eval_function)
                 other_result => {
                     self.environment = prev_env;
                     return other_result;
@@ -311,7 +337,6 @@ impl<'a> Interpreter<'a> {
             }
         }
 
-        // 2. 正常结束，退出作用域 (Pop Scope)
         self.environment = prev_env;
         EvalResult::Ok(last_val)
     }
@@ -335,20 +360,22 @@ impl<'a> Interpreter<'a> {
 
     fn eval_while(&mut self, condition: &Expression, body: &Block) -> EvalResult {
         loop {
-            // 1. 计算条件
             let cond_val = require_ok!(self.evaluate(condition));
 
-            // 判断真假
             let is_true = match cond_val {
                 Value::Bool(b) => b,
-                _ => return EvalResult::Err("While condition must be a boolean".into()),
+                _ => {
+                    return EvalResult::Err(RuntimeErrorKind::TypeError {
+                        expected: "Bool".into(),
+                        found: "Non-Bool".into(),
+                    });
+                }
             };
 
             if !is_true {
                 break;
             }
 
-            // 2. 执行循环体 (While 也可以有自己的作用域，通常建议有)
             let prev_env = self.environment.clone();
             let loop_env = Environment::with_enclosing(prev_env.clone());
             self.environment = Rc::new(RefCell::new(loop_env));
@@ -357,7 +384,6 @@ impl<'a> Interpreter<'a> {
 
             self.environment = prev_env;
 
-            // 3. 处理控制流
             match result {
                 EvalResult::Ok(_) => continue,
                 EvalResult::Continue => continue,
@@ -375,37 +401,26 @@ impl<'a> Interpreter<'a> {
         iterable_expr: &Expression,
         body: &Block,
     ) -> EvalResult {
-        // 1. 计算可迭代对象
         let collection_val = require_ok!(self.evaluate(iterable_expr));
 
         match collection_val {
-            // === Case A: 数组迭代 ===
             Value::Array(arr_rc) => {
-                // 浅拷贝快照，避免 RefCell 冲突
                 let elements = arr_rc.borrow().clone();
-
                 for item in elements {
                     let result = self.eval_loop_body(body, Some((iterator_sym, item)));
                     match result {
                         EvalResult::Ok(_) => continue,
-                        EvalResult::Continue => continue, // 吞掉 Continue，继续下一次
-                        EvalResult::Break => break,       // 遇到 Break，退出循环
-                        // Return/Err 必须向上冒泡
+                        EvalResult::Continue => continue,
+                        EvalResult::Break => break,
                         _ => return result,
                     }
                 }
                 EvalResult::Ok(Value::Unit)
             }
 
-            // === Case B: [New] 字符串迭代 ===
-            // for c in "hello" -> c 是长度为 1 的 String (或 Char)
             Value::Str(s) => {
-                // 遍历字符
                 for c in s.chars() {
-                    // 如果你有 Value::Char，就用 Value::Char(c)
-                    // 如果没有，就用 String
                     let char_val = Value::Str(c.to_string());
-
                     let result = self.eval_loop_body(body, Some((iterator_sym, char_val)));
                     match result {
                         EvalResult::Ok(_) => continue,
@@ -417,26 +432,28 @@ impl<'a> Interpreter<'a> {
                 EvalResult::Ok(Value::Unit)
             }
 
-            // === Case C: [New] 范围迭代 (Lazy) ===
-            // for i in 0..1000
-            // 不需要分配数组，直接数数
             Value::Range(start, end) => {
-                // 注意：Loom 的 .. 是左闭右开还是全闭？
-                // Rust 是 0..10 (不包含 10)。假设 Loom 也是。
-                // 如果 start/end 是 float，可能需要报错或者转成 int
                 let start_i = match start.as_int() {
                     Some(i) => i,
-                    None => return EvalResult::Err("Range start must be integer".into()),
+                    None => {
+                        return EvalResult::Err(RuntimeErrorKind::TypeError {
+                            expected: "Int".into(),
+                            found: "Non-Int".into(),
+                        });
+                    }
                 };
                 let end_i = match end.as_int() {
                     Some(i) => i,
-                    None => return EvalResult::Err("Range end must be integer".into()),
+                    None => {
+                        return EvalResult::Err(RuntimeErrorKind::TypeError {
+                            expected: "Int".into(),
+                            found: "Non-Int".into(),
+                        });
+                    }
                 };
 
-                // 使用 Rust 的 Range 进行遍历
                 for i in start_i..end_i {
                     let int_val = Value::Int(i);
-
                     let result = self.eval_loop_body(body, Some((iterator_sym, int_val)));
                     match result {
                         EvalResult::Ok(_) => continue,
@@ -448,50 +465,38 @@ impl<'a> Interpreter<'a> {
                 EvalResult::Ok(Value::Unit)
             }
 
-            _ => EvalResult::Err(format!("Type {:?} is not iterable", collection_val)),
+            _ => EvalResult::Err(RuntimeErrorKind::TypeError {
+                expected: "Iterable (Array, Str, Range)".into(),
+                found: format!("{:?}", collection_val),
+            }),
         }
     }
 
-    /// 通用循环体执行器
-    /// item: 当前迭代的值 (对于 while 循环，这里可以传 None 或者 Unit，但在 for 循环里必传)
-    /// iterator_sym: 迭代变量绑定的名字 (for 循环用)
     fn eval_loop_body(
         &mut self,
         body: &Block,
-        iterator_sym: Option<(Symbol, Value)>, // (变量名, 变量值)
+        iterator_sym: Option<(Symbol, Value)>,
     ) -> EvalResult {
-        // 1. 每次循环创建一个新作用域
         let prev_env = self.environment.clone();
         let mut loop_env = Environment::with_enclosing(prev_env.clone());
 
-        // 2. 如果是 for 循环，绑定迭代变量
         if let Some((sym, val)) = iterator_sym {
             loop_env.define(sym, val);
         }
 
-        // 3. 切换环境
         self.environment = Rc::new(RefCell::new(loop_env));
-
-        // 4. 执行循环体 (复用 execute_block)
         let result = self.execute_block(body);
-
-        // 5. 恢复环境
         self.environment = prev_env;
 
-        // 6. 统一处理 Break/Continue
-        // 注意：这里我们消费掉 Continue，但把 Break 转换成 Ok(Unit) 以便让外层停止循环
-        // 或者保留 Break 让外层 loop 决定退出
         result
     }
 
-    // [New] 处理 return 语句
     fn eval_return(&mut self, val_opt: &Option<Box<Expression>>) -> EvalResult {
         let val = if let Some(expr) = val_opt {
             require_ok!(self.evaluate(expr))
         } else {
             Value::Unit
         };
-        // 发出 Return 信号
         EvalResult::Return(val)
     }
 
@@ -509,93 +514,110 @@ impl<'a> Interpreter<'a> {
     }
 
     fn eval_binary(&mut self, op: BinaryOp, left: &Expression, right: &Expression) -> EvalResult {
-        // === 1. 逻辑运算符 (需要短路求值) ===
-        // 注意：我们不能先 evaluate(right)，必须根据 left 的结果决定
         match op {
             BinaryOp::And => {
                 let left_val = require_ok!(self.evaluate(left));
-                // 如果左边是假，直接返回左边的值 (短路)，不再计算右边
                 if !self.is_truthy(&left_val) {
                     return EvalResult::Ok(left_val);
                 }
-                // 否则返回右边的计算结果
                 return self.evaluate(right);
             }
             BinaryOp::Or => {
                 let left_val = require_ok!(self.evaluate(left));
-                // 如果左边是真，直接返回左边的值 (短路)
                 if self.is_truthy(&left_val) {
                     return EvalResult::Ok(left_val);
                 }
                 return self.evaluate(right);
             }
-            _ => {} // 其他运算符继续向下执行
+            _ => {}
         }
 
-        // === 2. 贪婪求值 (Eager Evaluation) ===
-        // 对于算术和比较，我们需要左右两边的值
         let l = require_ok!(self.evaluate(left));
         let r = require_ok!(self.evaluate(right));
 
         let res = match op {
-            // --- 算术运算 ---
             BinaryOp::Add => match (l, r) {
                 (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
                 (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
                 (Value::Str(a), Value::Str(b)) => Value::Str(a + &b),
-                (Value::Str(a), other) => Value::Str(format!("{}{}", a, other)), // 允许 "a" + 1
-                (other, Value::Str(b)) => Value::Str(format!("{}{}", other, b)), // 允许 1 + "a"
-                _ => return EvalResult::Err("Type mismatch for +".into()),
+                (Value::Str(a), other) => Value::Str(format!("{}{}", a, other)),
+                (other, Value::Str(b)) => Value::Str(format!("{}{}", other, b)),
+                _ => {
+                    return EvalResult::Err(RuntimeErrorKind::TypeError {
+                        expected: "Addable".into(),
+                        found: "Mismatch".into(),
+                    });
+                }
             },
 
             BinaryOp::Sub => match (l, r) {
                 (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
                 (Value::Float(a), Value::Float(b)) => Value::Float(a - b),
-                _ => return EvalResult::Err("Type mismatch for -".into()),
+                _ => {
+                    return EvalResult::Err(RuntimeErrorKind::TypeError {
+                        expected: "Number".into(),
+                        found: "Mismatch".into(),
+                    });
+                }
             },
 
             BinaryOp::Mul => match (l, r) {
                 (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
                 (Value::Float(a), Value::Float(b)) => Value::Float(a * b),
-                _ => return EvalResult::Err("Type mismatch for *".into()),
+                _ => {
+                    return EvalResult::Err(RuntimeErrorKind::TypeError {
+                        expected: "Number".into(),
+                        found: "Mismatch".into(),
+                    });
+                }
             },
 
             BinaryOp::Div => match (l, r) {
                 (Value::Int(a), Value::Int(b)) => {
                     if b == 0 {
-                        return EvalResult::Err("Division by zero".into());
+                        return EvalResult::Err(RuntimeErrorKind::DivisionByZero);
                     }
                     Value::Int(a / b)
                 }
                 (Value::Float(a), Value::Float(b)) => Value::Float(a / b),
-                _ => return EvalResult::Err("Type mismatch for /".into()),
+                _ => {
+                    return EvalResult::Err(RuntimeErrorKind::TypeError {
+                        expected: "Number".into(),
+                        found: "Mismatch".into(),
+                    });
+                }
             },
 
             BinaryOp::Mod => match (l, r) {
                 (Value::Int(a), Value::Int(b)) => {
                     if b == 0 {
-                        return EvalResult::Err("Modulo by zero".into());
+                        return EvalResult::Err(RuntimeErrorKind::DivisionByZero);
                     }
                     Value::Int(a % b)
                 }
                 (Value::Float(a), Value::Float(b)) => Value::Float(a % b),
-                _ => return EvalResult::Err("Type mismatch for %".into()),
+                _ => {
+                    return EvalResult::Err(RuntimeErrorKind::TypeError {
+                        expected: "Number".into(),
+                        found: "Mismatch".into(),
+                    });
+                }
             },
 
-            // --- 比较运算 ---
-
-            // 相等性检查 (利用 Value 的 PartialEq)
             BinaryOp::Eq => Value::Bool(l == r),
             BinaryOp::Neq => Value::Bool(l != r),
 
-            // 大小比较
             BinaryOp::Lt => match (l, r) {
                 (Value::Int(a), Value::Int(b)) => Value::Bool(a < b),
                 (Value::Float(a), Value::Float(b)) => Value::Bool(a < b),
-                // 允许 Int 和 Float 比较 (稍微灵活一点)
                 (Value::Int(a), Value::Float(b)) => Value::Bool((a as f64) < b),
                 (Value::Float(a), Value::Int(b)) => Value::Bool(a < (b as f64)),
-                _ => return EvalResult::Err("Invalid types for <".into()),
+                _ => {
+                    return EvalResult::Err(RuntimeErrorKind::TypeError {
+                        expected: "Comparable".into(),
+                        found: "Mismatch".into(),
+                    });
+                }
             },
 
             BinaryOp::Lte => match (l, r) {
@@ -603,7 +625,12 @@ impl<'a> Interpreter<'a> {
                 (Value::Float(a), Value::Float(b)) => Value::Bool(a <= b),
                 (Value::Int(a), Value::Float(b)) => Value::Bool((a as f64) <= b),
                 (Value::Float(a), Value::Int(b)) => Value::Bool(a <= (b as f64)),
-                _ => return EvalResult::Err("Invalid types for <=".into()),
+                _ => {
+                    return EvalResult::Err(RuntimeErrorKind::TypeError {
+                        expected: "Comparable".into(),
+                        found: "Mismatch".into(),
+                    });
+                }
             },
 
             BinaryOp::Gt => match (l, r) {
@@ -611,7 +638,12 @@ impl<'a> Interpreter<'a> {
                 (Value::Float(a), Value::Float(b)) => Value::Bool(a > b),
                 (Value::Int(a), Value::Float(b)) => Value::Bool((a as f64) > b),
                 (Value::Float(a), Value::Int(b)) => Value::Bool(a > (b as f64)),
-                _ => return EvalResult::Err("Invalid types for >".into()),
+                _ => {
+                    return EvalResult::Err(RuntimeErrorKind::TypeError {
+                        expected: "Comparable".into(),
+                        found: "Mismatch".into(),
+                    });
+                }
             },
 
             BinaryOp::Gte => match (l, r) {
@@ -619,10 +651,14 @@ impl<'a> Interpreter<'a> {
                 (Value::Float(a), Value::Float(b)) => Value::Bool(a >= b),
                 (Value::Int(a), Value::Float(b)) => Value::Bool((a as f64) >= b),
                 (Value::Float(a), Value::Int(b)) => Value::Bool(a >= (b as f64)),
-                _ => return EvalResult::Err("Invalid types for >=".into()),
+                _ => {
+                    return EvalResult::Err(RuntimeErrorKind::TypeError {
+                        expected: "Comparable".into(),
+                        found: "Mismatch".into(),
+                    });
+                }
             },
 
-            // 逻辑运算已经在上面处理过了，这里应该不会走到
             _ => Value::Unit,
         };
 
@@ -636,7 +672,12 @@ impl<'a> Interpreter<'a> {
             UnaryOp::Neg => match val {
                 Value::Int(i) => Value::Int(-i),
                 Value::Float(f) => Value::Float(-f),
-                _ => return EvalResult::Err("Invalid type for negation".into()),
+                _ => {
+                    return EvalResult::Err(RuntimeErrorKind::TypeError {
+                        expected: "Number".into(),
+                        found: "Mismatch".into(),
+                    });
+                }
             },
         };
         EvalResult::Ok(res)
@@ -660,10 +701,16 @@ impl<'a> Interpreter<'a> {
                 if idx >= 0 && (idx as usize) < vec.len() {
                     EvalResult::Ok(vec[idx as usize].clone())
                 } else {
-                    EvalResult::Err("Index out of bounds".into())
+                    EvalResult::Err(RuntimeErrorKind::IndexOutOfBounds {
+                        index: idx,
+                        len: vec.len(),
+                    })
                 }
             }
-            _ => EvalResult::Err("Index not supported".into()),
+            _ => EvalResult::Err(RuntimeErrorKind::TypeError {
+                expected: "Indexable".into(),
+                found: "Mismatch".into(),
+            }),
         }
     }
 }

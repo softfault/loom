@@ -27,7 +27,6 @@ impl<'a> Parser<'a> {
             TokenKind::Equal | TokenKind::NotEqual |
             TokenKind::LessThan | TokenKind::LessEqual |
             TokenKind::GreaterThan | TokenKind::GreaterEqual => Some(40),
-            
             // --- 加减 (50) ---
             TokenKind::Plus | TokenKind::Minus => Some(50),
 
@@ -55,36 +54,41 @@ impl<'a> Parser<'a> {
         // 2. Infix / Postfix
         loop {
             let next_token = self.peek();
-            if next_token.kind == TokenKind::EOF { break; }
+            if next_token.kind == TokenKind::EOF {
+                break;
+            }
 
             // 特殊检查：如果遇到 '<'，先判断它是泛型还是小于号
             if next_token.kind == TokenKind::LessThan {
-                 if self.looks_like_generic_args() {
+                if self.looks_like_generic_args() {
                     // 这是一个泛型调用！转交给 postfix 处理
                     lhs = self.parse_postfix_generic(lhs)?;
                     continue; // 继续下一次循环
-                 }
-                 // 否则，它是小于号，继续下面的 op_bp 逻辑
+                }
+                // 否则，它是小于号，继续下面的 op_bp 逻辑
             }
-            
+
             let op_bp = match self.get_binding_power(next_token.kind) {
                 Some(bp) if bp >= min_bp => bp,
                 _ => break,
             };
 
             // 分流处理：后缀 / 赋值 / 二元
-            if matches!(next_token.kind, TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::Dot) {
+            if matches!(
+                next_token.kind,
+                TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::Dot
+            ) {
                 lhs = self.parse_postfix(lhs)?;
-            } 
+            }
             // [Fix] 专门处理 Range (..)
             else if next_token.kind == TokenKind::DotDot {
                 self.advance(); // 吃掉 ..
-                
+
                 // Range 是左结合还是右结合？通常无所谓，这里用 op_bp
                 let rhs = self.parse_expression_bp(op_bp)?;
-                
+
                 let span = lhs.span.to(rhs.span);
-                
+
                 // 生成专门的 Range 节点
                 lhs = self.make_node(
                     ExpressionData::Range {
@@ -92,7 +96,7 @@ impl<'a> Parser<'a> {
                         end: Box::new(rhs),
                         inclusive: false, // Loom 默认为 0..5 (不包含5)
                     },
-                    span
+                    span,
                 );
             }
             // [New] 赋值操作处理
@@ -102,7 +106,7 @@ impl<'a> Parser<'a> {
                 // a = b = c  => a = (b = c)
                 let r_bp = op_bp; // 右结合
                 let rhs = self.parse_expression_bp(r_bp)?;
-                
+
                 let span = lhs.span.to(rhs.span);
                 lhs = self.make_node(
                     ExpressionData::Assign {
@@ -110,16 +114,16 @@ impl<'a> Parser<'a> {
                         target: Box::new(lhs),
                         value: Box::new(rhs),
                     },
-                    span
+                    span,
                 );
             }
             // 二元操作处理
             else {
                 self.advance(); // eat op
                 let op = self.map_binary_op(next_token.kind);
-                
+
                 // 左结合
-                let r_bp = op_bp + 1; 
+                let r_bp = op_bp + 1;
                 let rhs = self.parse_expression_bp(r_bp)?;
 
                 let span = lhs.span.to(rhs.span);
@@ -165,12 +169,15 @@ impl<'a> Parser<'a> {
             TokenKind::Or => BinaryOp::Or,
             // 赋值算特殊，但在 AST 里可能只是 BinaryOp::Assign 或者单独节点
             // 如果 ExpressionData 没有 Assign，则需要扩展
-             _ => BinaryOp::Eq, // Fallback/Panic
+            _ => BinaryOp::Eq, // Fallback/Panic
         }
     }
-    
+
     fn is_right_associative(&self, kind: TokenKind) -> bool {
-        matches!(kind, TokenKind::Assign | TokenKind::PlusAssign /* ... */)
+        matches!(
+            kind,
+            TokenKind::Assign | TokenKind::PlusAssign /* ... */
+        )
     }
 
     /// 检查当前的 '<' 是否看起来像泛型参数列表
@@ -182,18 +189,18 @@ impl<'a> Parser<'a> {
         // 假设当前 peek() 是 '<'
         let mut depth = 0;
         let mut i = 1; // 0 is '<'
-        
+
         loop {
             let tok = self.peek_nth(i);
             match tok.kind {
                 TokenKind::EOF | TokenKind::Newline => return false, // 泛型不应该跨语句
-                
+
                 // 可能是类型的部分
                 TokenKind::Identifier | TokenKind::Comma | TokenKind::SmallSelf => {}
-                
+
                 // 嵌套泛型 List<Vec<T>>
                 TokenKind::LessThan => depth += 1,
-                
+
                 TokenKind::GreaterThan => {
                     if depth == 0 {
                         // 找到了匹配的 '>'
@@ -204,11 +211,14 @@ impl<'a> Parser<'a> {
                     }
                     depth -= 1;
                 }
-                
+
                 // 快速失败：如果出现操作符、字面量等，肯定不是泛型
                 // e.g. run<10> (Loom 泛型目前只支持类型，不支持 const generics)
-                TokenKind::Equal | TokenKind::Plus | TokenKind::StringLiteral | TokenKind::Integer => return false,
-                
+                TokenKind::Equal
+                | TokenKind::Plus
+                | TokenKind::StringLiteral
+                | TokenKind::Integer => return false,
+
                 _ => {} // 其他 token 继续扫描
             }
             i += 1;

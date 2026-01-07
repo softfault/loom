@@ -1,5 +1,6 @@
 use super::types::{FunctionSignature, Type};
-use crate::ast::TableDefinition;
+use crate::analyzer::TableId;
+use crate::ast::{MethodDefinition, TableDefinition};
 use crate::source::FileId;
 use crate::utils::{Span, Symbol};
 use std::collections::HashMap;
@@ -16,6 +17,7 @@ pub struct FieldInfo {
 // [New] 方法元数据
 #[derive(Debug, Clone)]
 pub struct MethodInfo {
+    pub generic_params: Vec<Symbol>,
     pub signature: FunctionSignature,
     /// 方法名定义在源码中的位置
     pub span: Span,
@@ -39,14 +41,22 @@ pub struct TableInfo {
     pub defined_span: Span,
 }
 
-// ModuleInfo 保持不变，它只持有 TableInfo，
-// 只要 TableInfo 变强了，ModuleInfo 自动受益。
 #[derive(Debug, Clone)]
 pub struct ModuleInfo {
     pub file_id: FileId,
     pub file_path: std::path::PathBuf,
-    pub exports: HashMap<Symbol, TableInfo>,
+
+    // [Changed] 原来只有 exports (TableInfo)，现在需要更多
+    // 我们可以把 exports 拆分，或者把 TableInfo, FunctionInfo 都统一成 ExportItem
+    pub tables: HashMap<TableId, TableInfo>,
+    pub functions: HashMap<Symbol, FunctionInfo>, // [New]
+    pub globals: HashMap<Symbol, GlobalVarInfo>,  // [New]
+
+    // 用于 AST 缓存 (如果需要保留给 Interpreter 用)
     pub ast_definitions: HashMap<Symbol, Rc<TableDefinition>>,
+    // 还需要缓存顶层函数的 AST 吗？ Interpreter 可能需要。
+    pub ast_functions: HashMap<Symbol, Rc<MethodDefinition>>,
+    pub program: Rc<crate::ast::Program>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,4 +77,26 @@ pub enum SymbolKind {
     Field,     // Table 字段
     Method,    // Table 方法
     Table,     // Table 类型名
+    Function,
+}
+
+// [New] 顶层函数元数据
+#[derive(Debug, Clone)]
+pub struct FunctionInfo {
+    pub name: Symbol,
+    pub generic_params: Vec<Symbol>, // 函数级泛型 <T>
+    pub signature: FunctionSignature,
+    pub span: Span,
+    pub file_id: FileId,
+}
+
+// [New] 顶层/全局变量元数据
+// 其实和 FieldInfo 很像，但为了语义区分，定义一个新的
+#[derive(Debug, Clone)]
+pub struct GlobalVarInfo {
+    pub name: Symbol,
+    pub ty: Type,
+    pub span: Span,
+    pub file_id: FileId,
+    pub is_const: bool, // 未来扩展
 }

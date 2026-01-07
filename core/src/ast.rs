@@ -1,5 +1,4 @@
 #![allow(unused)]
-pub mod finder;
 mod node;
 
 use crate::token::TokenKind;
@@ -12,6 +11,8 @@ pub use node::{Node, NodeId};
 #[derive(Debug, Clone)]
 pub enum TopLevelItem {
     Table(TableDefinition),
+    Function(MethodDefinition),
+    Field(FieldDefinition),
     Use(UseStatement),
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +33,7 @@ pub struct UseStatementData {
 }
 pub type UseStatement = Node<UseStatementData>;
 
-// 修改 Program
+#[derive(Debug, Clone)]
 pub struct Program {
     pub definitions: Vec<TopLevelItem>, // 改这里
     pub span: Span,
@@ -53,7 +54,7 @@ pub struct TableDefinitionData {
 pub type TableDefinition = Node<TableDefinitionData>;
 
 /// 泛型参数定义 <T: Base>
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GenericParamData {
     pub name: Symbol,
     pub constraint: Option<TypeRef>,
@@ -83,6 +84,7 @@ pub type FieldDefinition = Node<FieldDefinitionData>;
 #[derive(Debug, Clone, PartialEq)]
 pub struct MethodDefinitionData {
     pub name: Symbol,
+    pub generics: Vec<GenericParam>,
     pub params: Vec<Param>,
     pub return_type: Option<TypeRef>, // 如果推导则为 None，但 Spec 建议显式
     pub body: Option<Block>,          // 方法体
@@ -107,6 +109,12 @@ pub enum TypeRefData {
     GenericInstance { base: Symbol, args: Vec<TypeRef> },
     /// 结构化类型: { name: str }
     Structural(Vec<Param>),
+    // 模块成员类型: std.io.File, lib.Animal
+    // 视为一种特殊的引用
+    Member {
+        module: Symbol, // e.g. "animal_lib"
+        member: Symbol, // e.g. "Animal"
+    },
 }
 pub type TypeRef = Node<TypeRefData>;
 

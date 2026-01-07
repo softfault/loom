@@ -1,3 +1,4 @@
+use super::errors::RuntimeErrorKind;
 use crate::analyzer::TableId;
 use crate::ast::{Block, MethodDefinition};
 use crate::context::Context;
@@ -25,7 +26,7 @@ pub enum Value {
 
     // [修改] 模块：现在只存 FileId
     // 解释器通过这个 FileId 去 Driver/Context 里找对应的导出表或 AST
-    Module(FileId),
+    Module(FileId, Rc<RefCell<Environment>>),
 
     // [New] 类对象 / Table 类型
     // 当你访问 `my_lib.Config` 时，返回的就是这个值。
@@ -37,24 +38,20 @@ pub enum Value {
     Instance(Rc<Instance>),
 
     // === 可调用对象 ===
-    Function {
-        params: Vec<Symbol>,
-        body: Block,
-        closure: Rc<RefCell<Environment>>,
-    },
+    Function(FileId, Symbol, Rc<RefCell<Environment>>),
 
     NativeFunction(NativeFuncPtr),
 
     // [修改] 绑定方法
     // 同样，Instance 内部已经包含了 TableId
-    BoundMethod(Rc<Instance>, MethodDefinition),
+    BoundMethod(Rc<Instance>, MethodDefinition, Rc<RefCell<Environment>>),
 
     BoundNativeMethod(Box<Value>, NativeFuncPtr),
 
     Range(Box<Value>, Box<Value>),
 }
 
-pub type NativeFuncPtr = fn(&mut Context, &[Value]) -> Value;
+pub type NativeFuncPtr = fn(&mut Context, &[Value]) -> Result<Value, RuntimeErrorKind>;
 
 // [修改] Table 实例结构
 #[derive(Debug, PartialEq)]
@@ -112,19 +109,19 @@ impl Value {
             }
 
             // [修改] 打印模块
-            Value::Module(file_id) => {
-                // 只显示 ID，因为这里拿不到文件名 (需要 Context)
+            Value::Module(file_id, _) => {
+                // 打印时只显示 ID，环境内容太多了不打印
                 format!("<module #{:?}>", file_id)
             }
 
-            Value::Function { params, .. } => {
-                let args: Vec<_> = params.iter().map(|p| interner.resolve(*p)).collect();
-                format!("<fn ({})>", args.join(", "))
+            Value::Function(file_id, name, ..) => {
+                let func_name = interner.resolve(*name);
+                format!("<fn {}>", func_name)
             }
 
             Value::NativeFunction(_) => "<native fn>".to_string(),
 
-            Value::BoundMethod(inst, method) => {
+            Value::BoundMethod(inst, method, ..) => {
                 let class_name = interner.resolve(inst.table_id.symbol());
                 let method_name = interner.resolve(method.name);
                 format!("<bound method {}.{}>", class_name, method_name)
@@ -153,7 +150,7 @@ impl fmt::Display for Value {
             Value::Array(_) => write!(f, "[...]"),
             Value::Instance(inst) => write!(f, "<instance>"), // 简略
             Value::Table(_) => write!(f, "<class>"),
-            Value::Module(_) => write!(f, "<module>"),
+            Value::Module(..) => write!(f, "<module>"),
             Value::Range(start, end) => write!(f, "{}..{}", start, end),
             _ => write!(f, "<...>"),
         }

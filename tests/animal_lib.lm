@@ -1,0 +1,9 @@
+# tests/animal_lib.lm
+default_sound = "Generic Sound"
+
+[Animal]
+name: str = "Unknown"
+
+make_sound = ()
+    # 这里访问的是 animal_lib.lm 的 default_sound
+    print(self.name + "says:" + default_sound)

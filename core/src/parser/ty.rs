@@ -7,6 +7,7 @@ impl<'a> Parser<'a> {
     /// Examples:
     /// - int
     /// - MyClass
+    /// - lib.MyClass  (New!)
     /// - List<String>
     /// - { name: str, age: int }
     pub fn parse_type(&mut self) -> ParseResult<TypeRef> {
@@ -18,7 +19,6 @@ impl<'a> Parser<'a> {
         }
 
         // 2. 基础类型关键字 (Base Types)
-        // 我们将关键字转换为 Named TypeRef，方便统一处理
         let toke = self.peek();
         if let Some(type_name) = self.get_basic_type_name(toke.kind) {
             self.advance(); // consume keyword
@@ -26,13 +26,44 @@ impl<'a> Parser<'a> {
             return Ok(self.make_node(TypeRefData::Named(name_sym), start_span));
         }
 
-        // 3. 具名类型或泛型实例化 (Identifier or Identifier<Args>)
+        // 3. 具名类型、模块成员或泛型 (Identifier start)
         if self.check(TokenKind::Identifier) {
-            let name_token = self.advance();
+            let name_token = self.advance(); // 消费第一个标识符 (e.g. "int" 或 "lib")
             let name = self.intern_token(name_token);
 
-            // 检查是否是泛型实例化: List<int>
-            // 在“解析类型”的上下文中，遇到 '<' 几乎一定意味着泛型，而不是小于号
+            // [New] Case A: 模块成员访问 (lib.Animal)
+            // 检查后面是否紧跟 '.'
+            if self.check(TokenKind::Dot) {
+                self.advance(); // 消费 '.'
+
+                // 我们期望下一个 token 必须是 Identifier
+                if self.check(TokenKind::Identifier) {
+                    let member_token = self.advance(); // 拿到 token
+                    let member_name = self.intern_token(member_token);
+
+                    // 构造 Member 节点
+                    let end_span = member_token.span;
+                    return Ok(self.make_node(
+                        TypeRefData::Member {
+                            module: name,
+                            member: member_name,
+                        },
+                        start_span.to(end_span),
+                    ));
+                } else {
+                    // 如果不是 Identifier，构建并抛出 ParseError
+                    let current = self.peek();
+                    return Err(ParseError {
+                        expected: "Identifier".to_string(),
+                        found: current.kind,
+                        span: current.span,
+                        message: "Expected type name after '.'".to_string(),
+                    });
+                }
+            }
+
+            // [Existing] Case B: 泛型实例化 (List<int>)
+            // 检查后面是否紧跟 '<'
             if self.check(TokenKind::LessThan) {
                 let args = self.parse_type_arguments()?;
                 let end_span = self.previous_span(); // '>' 的位置
@@ -43,7 +74,7 @@ impl<'a> Parser<'a> {
                 ));
             }
 
-            // 普通具名类型
+            // [Existing] Case C: 普通具名类型 (MyClass)
             return Ok(self.make_node(TypeRefData::Named(name), start_span));
         }
 
@@ -53,7 +84,7 @@ impl<'a> Parser<'a> {
             expected: "Type".to_string(),
             found: current.kind,
             span: current.span,
-            message: "Expected a type (e.g. 'int', 'String', '{...}')".to_string(),
+            message: "Expected a type (e.g. 'int', 'String', 'lib.Type', '{...}')".to_string(),
         })
     }
 

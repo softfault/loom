@@ -1,11 +1,9 @@
 use super::tableid::TableId;
-use crate::ast::TableDefinition;
+use crate::context::Context;
 use crate::source::FileId;
-use crate::utils::{Interner, Span, Symbol};
+use crate::utils::Symbol;
 use std::collections::HashMap;
 use std::fmt;
-use std::path::PathBuf;
-use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
@@ -65,7 +63,7 @@ pub enum Type {
     Range(Box<Type>),
 
     Never,
-    Module(PathBuf),
+    Module(FileId),
 }
 
 #[derive(Debug, Clone)]
@@ -195,9 +193,8 @@ impl Type {
             Type::Table(sym) => interner.resolve(sym.symbol()).to_string(),
 
             // 模块类型 (显示简短名字)
-            Type::Module(path) => {
-                let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("?");
-                format!("module<{}>", name)
+            Type::Module(file_id) => {
+                format!("module<#{:?}>", file_id)
             }
 
             Type::Array(inner) => format!("[{}]", inner.to_string(interner)),
@@ -218,7 +215,6 @@ impl Type {
             Type::Range(inner) => format!("Range<{}>", inner.to_string(interner)),
 
             Type::Function { params, ret } => {
-                // 假设 params 是 Vec<(Symbol, Type)>，如果只是 Vec<Type> 则去掉 .1
                 let p_str: Vec<_> = params.iter().map(|p| p.to_string(interner)).collect();
                 format!("({}) -> {}", p_str.join(", "), ret.to_string(interner))
             }
@@ -262,21 +258,22 @@ impl Type {
         }
     }
 
-    pub fn display<'a>(&'a self, interner: &'a Interner) -> TypePrinter<'a> {
-        TypePrinter { ty: self, interner }
+    pub fn display<'a>(&'a self, ctx: &'a Context) -> TypePrinter<'a> {
+        TypePrinter { ctx, ty: self }
     }
 }
 
 // 2. 定义打印辅助结构体
 pub struct TypePrinter<'a> {
     ty: &'a Type,
-    interner: &'a Interner,
+    pub ctx: &'a Context,
 }
 
 // 3. 为 Printer 实现 Display
 impl<'a> fmt::Display for TypePrinter<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let interner = self.interner;
+        let interner = &self.ctx.interner;
+        let source_manager = &self.ctx.source_manager;
         match self.ty {
             Type::Int => write!(f, "int"),
             Type::Float => write!(f, "float"),
@@ -293,12 +290,16 @@ impl<'a> fmt::Display for TypePrinter<'a> {
             Type::Table(sym) => write!(f, "{}", interner.resolve(sym.symbol())),
             Type::GenericParam(sym) => write!(f, "{}", interner.resolve(*sym)),
 
-            Type::Module(path) => {
-                let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("?");
+            Type::Module(file_id) => {
+                let path_str = source_manager.get_file_name(*file_id).unwrap_or("?");
+                let name = std::path::Path::new(path_str)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("?");
                 write!(f, "module<{}>", name)
             }
 
-            Type::Array(inner) => write!(f, "[{}]", inner.display(interner)),
+            Type::Array(inner) => write!(f, "[{}]", inner.display(self.ctx)),
 
             Type::GenericInstance { base, args } => {
                 let base_str = interner.resolve(base.symbol());
@@ -307,7 +308,7 @@ impl<'a> fmt::Display for TypePrinter<'a> {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}", arg.display(interner))?;
+                    write!(f, "{}", arg.display(self.ctx))?;
                 }
                 write!(f, ">")
             }
@@ -318,12 +319,12 @@ impl<'a> fmt::Display for TypePrinter<'a> {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}", t.display(interner))?;
+                    write!(f, "{}", t.display(self.ctx))?;
                 }
                 write!(f, ")")
             }
 
-            Type::Range(inner) => write!(f, "Range<{}>", inner.display(interner)),
+            Type::Range(inner) => write!(f, "Range<{}>", inner.display(self.ctx)),
 
             Type::Function { params, ret } => {
                 write!(f, "(")?;
@@ -331,9 +332,9 @@ impl<'a> fmt::Display for TypePrinter<'a> {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}", p.display(interner))?;
+                    write!(f, "{}", p.display(self.ctx))?;
                 }
-                write!(f, ") -> {}", ret.display(interner))
+                write!(f, ") -> {}", ret.display(self.ctx))
             }
 
             // 改进 Structural 的打印
@@ -343,7 +344,7 @@ impl<'a> fmt::Display for TypePrinter<'a> {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}: {}", interner.resolve(*name), ty.display(interner))?;
+                    write!(f, "{}: {}", interner.resolve(*name), ty.display(self.ctx))?;
                 }
                 write!(f, " }}")
             }
