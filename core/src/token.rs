@@ -97,7 +97,7 @@ define_tokens! {
         "else"     => Else,
         "for"      => For,
         "in"       => In,
-        "while"    => While,     // 虽然 Spec 没写，但通常需要
+        "while"    => While,
         "break"    => Break,
         "continue" => Continue,
         "return"   => Return,
