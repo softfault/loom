@@ -4,3 +4,11 @@
 [Main]
 main = () int
     print(identity<str>("hello"))
+
+[List<T>]
+
+map = <U>() List<U> 
+    ...
+
+a = 3
+string = "hello"

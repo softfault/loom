@@ -13,6 +13,6 @@ secret_code = 99999
     
     if real_secret == 12345 
         print("PASS: Lexical Scoping works!")
-    else 
+    else
         print("FAIL: Dynamic Scoping detected!")
     

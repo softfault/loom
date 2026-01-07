@@ -2,70 +2,70 @@
 
 > A statically typed, modular, object-oriented scripting language written in Rust.
 
-Loom 是一门结合了脚本语言灵活性与静态语言安全性的编程语言，灵感来自 TOML 和 Python。它拥有类似 Python 的简洁语法，但在编译期（Analyzer 阶段）就能通过强大的类型检查系统捕获错误。
+Loom is a programming language that blends the flexibility of scripting languages with the safety of static typing, inspired by TOML and Python. It features a clean, Python-like syntax but captures errors at compile-time (Analyzer phase) through a robust type-checking system.
 
-它的设计目标是提供一种现代化的脚本体验：**写的时候像脚本一样流畅，跑的时候像 Rust 一样放心。**
+Its design goal is to provide a modern scripting experience: **Write with the fluidity of a script, run with the confidence of Rust.**
 
-## 核心特性
+## Core Features
 
-* **模块化系统 (New!)**:
-* 支持多文件项目结构。
-* 支持 `use` 语句导入模块。
-* 支持跨模块继承 (`[Dog : lib.Animal]`) 和类型引用。
-
-
-* **强类型系统**: 支持 `int`, `float`, `bool`, `str`, `char` 等基础类型，以及强大的类型推导。
-* **面向对象**:
-* 支持类定义 (`[ClassName]`)。
-* 支持单继承。
-* 支持方法重写与多态 (Dynamic Dispatch)。
+* **Modular System (New!)**:
+* Supports multi-file project structures.
+* Supports the `use` statement for module imports.
+* Supports cross-module inheritance (`[Dog : lib.Animal]`) and type referencing.
 
 
-* **泛型**:
-* 支持泛型类 (`Box<T>`, `List<T>`)。
-* **协变支持 (Covariance)**: 允许 `Box<Dog>` 赋值给 `Box<Animal>`，符合脚本语言的直觉。
+* **Strong Type System**: Supports basic types like `int`, `float`, `bool`, `str`, `char`, along with powerful type inference.
+* **Object-Oriented**:
+* Supports class definitions (`[ClassName]`).
+* Supports single inheritance.
+* Supports method overriding and Dynamic Dispatch.
 
 
-* **现代控制流**:
-* `if-else` 表达式。
-* `while` 循环。
-* `for-in` 迭代器（支持数组、字符串遍历，以及零开销的 Range `0..100`）。
+* **Generics**:
+* Supports generic classes (`Box<T>`, `List<T>`).
+* **Covariance Support**: Allows assigning `Box<Dog>` to `Box<Animal>`, aligning with scripting language intuition.
 
 
-* **安全性**:
-* 基于 `TableId` 的全程序符号解析。
-* 完整的语义分析器，支持作用域检查、类型兼容性检查和泛型约束验证。
+* **Modern Control Flow**:
+* `if-else` expressions.
+* `while` loops.
+* `for-in` iterators (supports array and string traversal, as well as zero-overhead Ranges `0..100`).
 
 
-* **Rust 驱动**: 解释器使用 Rust 编写，内存安全且高效。
+* **Safety**:
+* Whole-program symbol resolution based on `TableId`.
+* Complete semantic analyzer supporting scope checks, type compatibility checks, and generic constraint verification.
 
-## 快速开始
 
-### 环境要求
+* **Rust-Powered**: The interpreter is written in Rust, ensuring memory safety and high efficiency.
 
-你需要安装 [Rust](https://www.rust-lang.org/) (Cargo)。
+## Quick Start
 
-### 构建与运行
+### Prerequisites
+
+You need to have [Rust](https://www.rust-lang.org/) (Cargo) installed.
+
+### Build & Run
 
 ```bash
-# 克隆仓库
+# Clone the repository
 git clone https://github.com/softfault/loom.git
 cd loom
 
-# 运行示例脚本
+# Run the example script
 cargo run tests/hello.lm
 
 ```
 
-## 语法示例
+## Syntax Examples
 
-### 1. 模块化与跨文件继承
+### 1. Modularity & Cross-File Inheritance
 
-Loom v0.0.2 引入了完整的模块系统。
+Loom v0.0.2 introduces a complete module system.
 
 **`libs/animal_lib.lm`**:
 
-```toml
+```loom
 [Animal]
 name: str
 make_sound = () => print("Generic Sound")
@@ -74,34 +74,34 @@ make_sound = () => print("Generic Sound")
 
 **`main.lm`**:
 
-```toml
-# 导入模块，创建别名
+```loom
+# Import module and create an alias
 use .animal_lib as lib
 
-# 跨模块继承：Dog 继承自 animal_lib 定义的 Animal
-# 编译器会自动去 lib 中查找父类定义，并检查字段兼容性
+# Cross-module inheritance: Dog inherits from Animal defined in animal_lib
+# The compiler automatically looks up the parent definition in lib and checks field compatibility
 [Dog : lib.Animal]
 make_sound = () => print("Woof!")
 
 [main()]
-    # 使用导入模块的类型
+    # Use types from the imported module
     a: lib.Animal = Dog()
     a.name = "Hachiko"
     
-    # 多态调用
-    a.make_sound() # 输出: Woof!
+    # Polymorphic call
+    a.make_sound() # Output: Woof!
 
 ```
 
-### 2. 基础语法与类型推导
+### 2. Basic Syntax & Type Inference
 
-```toml
+```loom
 [main()]
-    # 变量定义 (自动推导为 str)
+    # Variable definition (automatically inferred as str)
     greet = "Hello, Loom!"
     print(greet)
     
-    # 显式类型标注
+    # Explicit type annotation
     count: int = 42
     
     if count > 10
@@ -111,88 +111,88 @@ make_sound = () => print("Woof!")
 
 ```
 
-### 3. 泛型与协变
+### 3. Generics & Covariance
 
-Loom 的类型系统支持泛型协变，这意味着“一箱苹果”可以被视为“一箱水果”。
+Loom's type system supports generic covariance, meaning "a box of apples" can be treated as "a box of fruit".
 
-```toml
+```loom
 [Box<T>]
 val: T 
 set = (v: T) => self.val = v
 get = () T => return self.val
 
 [main()]
-    # 实例化泛型
+    # Instantiate generic
     int_box = Box<int>()
     int_box.set(100)
     
-    # 泛型协变演示
+    # Generic covariance demonstration
     box_dog = Box<Dog>()
     box_animal: Box<Animal> = box_dog
 
 ```
 
-### 4. 迭代器
+### 4. Iterators
 
-支持多种数据类型的遍历。
+Supports traversal of various data types.
 
-```toml
+```loom
 [main()]
-    # 1. 数组遍历
+    # 1. Array traversal
     arr = [10, 20, 30]
     for x in arr
         print(x)
 
-    # 2. 字符串遍历
+    # 2. String traversal
     str = "Loom"
     for c in str
         print(c) # L, o, o, m
 
-    # 3. Range 遍历 (Lazy Evaluation)
-    # 不会分配内存，直接生成数值
+    # 3. Range traversal (Lazy Evaluation)
+    # Does not allocate memory, generates values directly
     for i in 0..5
         print(i) # 0, 1, 2, 3, 4
 
 ```
 
-## 项目架构 
+## Project Architecture
 
-Loom 的编译器架构在 v0.0.2 进行了重构，以支持多文件分析和更严格的类型检查：
+The Loom compiler architecture was refactored in v0.0.2 to support multi-file analysis and stricter type checking:
 
 1. **SourceManager (`src/source/`)**:
-* 统一管理多文件源码，提供 `FileId` 到文件路径的映射。
-* 支持按需加载和缓存文件内容。
+* Unifies management of multi-file source code, providing a mapping from `FileId` to file paths.
+* Supports on-demand loading and content caching.
 
 
 2. **Parser (`src/parser/`)**:
-* 基于递归下降与 Pratt Parsing。
-* **更新**: 支持 `lib.Type` 形式的成员类型解析。
+* Based on Recursive Descent and Pratt Parsing.
+* **Update**: Supports parsing of member types in the format `lib.Type`.
 
 
 3. **Analyzer (`src/analyzer/`)**:
-* **核心重构**: 将符号表 Key 从 `Symbol` (字符串) 升级为 `TableId` (FileId + Symbol)。这消除了同名类在不同文件中的歧义。
-* **Pass 1 (Collect)**: 收集所有文件的符号定义。
-* **Pass 2 (Resolve)**: 处理继承关系，支持**跨文件父类查找**和静态字段拷贝 (Static Field Copying)。
-* **Pass 3 (Check)**: 深度语义检查，利用 `TableId` 进行精确的类型兼容性验证（支持泛型协变）。
+* **Core Refactor**: Upgraded the Symbol Table Key from `Symbol` (String) to `TableId` (FileId + Symbol). This eliminates ambiguity for classes with the same name in different files.
+* **Pass 1 (Collect)**: Collects symbol definitions from all files.
+* **Pass 2 (Resolve)**: Handles inheritance relationships, supporting **cross-file parent lookup** and Static Field Copying.
+* **Pass 3 (Check)**: Deep semantic checking, utilizing `TableId` for precise type compatibility verification (supporting generic covariance).
 
 
 4. **Interpreter (`src/interpreter/`)**:
-* 基于 AST 的 Tree-Walking 解释器。
-* **更新**: 实现了**动态原型链查找 (Dynamic Prototype Lookup)**。当遇到跨模块继承时，解释器会自动在运行时环境中查找导入的模块对象，从而正确调用父类方法。
+* AST-based Tree-Walking interpreter.
+* **Update**: Implemented **Dynamic Prototype Lookup**. When encountering cross-module inheritance, the interpreter automatically looks up imported module objects in the runtime environment to correctly invoke parent methods.
 
 
 
-## 路线图
+## Roadmap
 
-* [x] 基础类型与控制流
-* [x] 面向对象 (类、继承、多态)
-* [x] 泛型系统 (Generics & Covariance)
-* [x] **模块化系统 (Modules & Imports)** (v0.0.2 Completed)
-* [x] **顶层函数与定义支持** (main函数，"全局"变量)
-* [x] **Analyzer 架构重构 (TableId System)** (v0.0.2 Completed)
-* [ ] **闭包 (Closures) 与高阶函数**
-* [ ] **标准库 (Standard Library)**: 文件 IO、系统调用
-* [ ] **LSP (Language Server Protocol)**: 提供代码补全和跳转定义
+* [x] Basic Types & Control Flow
+* [x] Object-Oriented (Classes, Inheritance, Polymorphism)
+* [x] Generics System (Generics & Covariance)
+* [x] **Modular System (Modules & Imports)** (v0.0.2 Completed)
+* [x] **Top-level Functions & Definitions** (main function, "global" variables)
+* [x] **Analyzer Architecture Refactor (TableId System)** (v0.0.2 Completed)
+* [ ] **Closures & Higher-Order Functions**
+* [ ] **Standard Library**: File I/O, System Calls
+* [ ] **LSP (Language Server Protocol)**: Code completion and Go-to-Definition
 
 ## License
 
