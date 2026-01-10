@@ -120,6 +120,7 @@ define_tokens! {
         "-="  => MinusAssign,
         "*="  => StarAssign,
         "/="  => SlashAssign,
+        "%="  => PercentAssign,
 
         // --- 逻辑 ---
         "!"   => Bang,    // Spec 中使用 if !fs.exists

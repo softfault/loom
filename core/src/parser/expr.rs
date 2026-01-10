@@ -17,7 +17,7 @@ impl<'a> Parser<'a> {
             // --- 赋值 (优先级最低 10) ---
             // Loom 支持 =, += 等赋值作为表达式
             TokenKind::Assign | TokenKind::PlusAssign | TokenKind::MinusAssign |
-            TokenKind::StarAssign | TokenKind::SlashAssign => Some(10),
+            TokenKind::StarAssign | TokenKind::SlashAssign | TokenKind::PercentAssign => Some(10),
 
             // --- 逻辑 (20-30) ---
             TokenKind::Or => Some(20),  // ||
@@ -148,6 +148,7 @@ impl<'a> Parser<'a> {
             TokenKind::MinusAssign => Some(AssignOp::MinusAssign),
             TokenKind::StarAssign => Some(AssignOp::MulAssign),
             TokenKind::SlashAssign => Some(AssignOp::DivAssign),
+            TokenKind::PercentAssign => Some(AssignOp::ModAssign),
             _ => None,
         }
     }
@@ -171,13 +172,6 @@ impl<'a> Parser<'a> {
             // 如果 ExpressionData 没有 Assign，则需要扩展
             _ => BinaryOp::Eq, // Fallback/Panic
         }
-    }
-
-    fn is_right_associative(&self, kind: TokenKind) -> bool {
-        matches!(
-            kind,
-            TokenKind::Assign | TokenKind::PlusAssign /* ... */
-        )
     }
 
     /// 检查当前的 '<' 是否看起来像泛型参数列表

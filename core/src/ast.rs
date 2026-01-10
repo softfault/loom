@@ -243,6 +243,7 @@ pub enum AssignOp {
     MinusAssign, // -=
     MulAssign,   // *=
     DivAssign,   // /=
+    ModAssign,   // %=
 }
 
 /// 代码块 (缩进块)

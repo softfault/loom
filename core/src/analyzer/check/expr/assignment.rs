@@ -66,6 +66,7 @@ impl<'a> Analyzer<'a> {
             AssignOp::MinusAssign => BinaryOp::Sub,
             AssignOp::MulAssign => BinaryOp::Mul,
             AssignOp::DivAssign => BinaryOp::Div,
+            AssignOp::ModAssign => BinaryOp::Mod,
             AssignOp::Assign => unreachable!(),
         };
 

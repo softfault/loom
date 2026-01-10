@@ -167,7 +167,25 @@ impl<'a> Analyzer<'a> {
                 Type::Error
             }
 
-            BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
+            BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
+                if op == BinaryOp::Mod {
+                    if left == Type::Int && right == Type::Int {
+                        return Type::Int;
+                    }
+                    // 友好的报错
+                    let l_str = left.display(&self.ctx).to_string();
+                    let r_str = right.display(&self.ctx).to_string();
+                    self.report(
+                        span,
+                        SemanticErrorKind::InvalidBinaryOperand {
+                            op: "%".to_string(),
+                            lhs: l_str,
+                            rhs: r_str,
+                        },
+                    );
+                    return Type::Error;
+                }
+
                 if left == Type::Int && right == Type::Int {
                     return Type::Int;
                 }

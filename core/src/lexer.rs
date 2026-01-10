@@ -164,6 +164,15 @@ impl<'a> Lexer<'a> {
                 }
             }
 
+            // Mod (%)
+            '%' => {
+                if self.match_char('=') {
+                    self.make_token(TokenKind::PercentAssign)
+                } else {
+                    self.make_token(TokenKind::Percent)
+                }
+            }
+
             // Equal (=)
             '=' => {
                 if self.match_char('=') {
