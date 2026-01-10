@@ -232,6 +232,12 @@ pub enum ExpressionData {
         target: Box<Expression>, // 左值 (l-value)
         value: Box<Expression>,  // 右值 (r-value)
     },
+
+    // [New] 类型转换: expr as Type
+    Cast {
+        expr: Box<Expression>,
+        target_type: TypeRef,
+    },
 }
 pub type Expression = Node<ExpressionData>;
 

@@ -184,6 +184,7 @@ impl<'a> Analyzer<'a> {
                     let field_info = FieldInfo {
                         ty,
                         span: field.span,
+                        value: field.value.clone(),
                     };
 
                     if fields.insert(field.name, field_info).is_some() {

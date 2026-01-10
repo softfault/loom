@@ -1,6 +1,6 @@
 use super::types::{FunctionSignature, Type};
 use crate::analyzer::TableId;
-use crate::ast::{MethodDefinition, TableDefinition};
+use crate::ast::{Expression, MethodDefinition, TableDefinition};
 use crate::source::FileId;
 use crate::utils::{Span, Symbol};
 use std::collections::HashMap;
@@ -12,6 +12,10 @@ pub struct FieldInfo {
     pub ty: Type,
     /// 字段定义在源码中的位置 (用于 Goto Definition)
     pub span: Span,
+    // [New] 保存字段的初始化表达式
+    // 例如 name: str = "Animal"，这里存的就是 "Animal" 的 AST
+    // 如果是 field: int，则是 None (或默认值 logic)
+    pub value: Option<Expression>,
 }
 
 // [New] 方法元数据

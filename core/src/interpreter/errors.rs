@@ -7,7 +7,10 @@ pub enum RuntimeErrorKind {
     NotCallable(String),
 
     /// 类型错误: 期望 String, 实际是 Int
-    TypeError { expected: String, found: String },
+    TypeError {
+        expected: String,
+        found: String,
+    },
 
     /// 参数数量错误
     ArgumentCountMismatch {
@@ -17,7 +20,10 @@ pub enum RuntimeErrorKind {
     },
 
     /// 索引越界
-    IndexOutOfBounds { index: i64, len: usize },
+    IndexOutOfBounds {
+        index: i64,
+        len: usize,
+    },
 
     /// 属性不存在 (Member Access)
     PropertyNotFound {
@@ -33,6 +39,11 @@ pub enum RuntimeErrorKind {
 
     /// 内部错误 (VM Bug)
     Internal(String),
+
+    InvalidCast {
+        src: String,
+        target: String,
+    },
 }
 
 impl std::fmt::Display for RuntimeErrorKind {
@@ -78,6 +89,9 @@ impl std::fmt::Display for RuntimeErrorKind {
             RuntimeErrorKind::DivisionByZero => write!(f, "Math Error: division by zero"),
             RuntimeErrorKind::Custom(msg) => write!(f, "Error: {}", msg),
             RuntimeErrorKind::Internal(msg) => write!(f, "Internal VM Error: {}", msg),
+            RuntimeErrorKind::InvalidCast { src, target } => {
+                write!(f, "Cast Error: cannot cast type '{}' to '{}'", src, target)
+            }
         }
     }
 }

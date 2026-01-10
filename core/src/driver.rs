@@ -94,6 +94,43 @@ impl Driver {
                 .collect();
             return Err(error_msgs.join("\n\n"));
         }
+        {
+            // 1. 获取主文件的 Analyzer 产物 (Clone 出来)
+            let main_tables = analyzer.tables.clone();
+            let main_functions = analyzer.functions.clone();
+            let main_globals = analyzer.globals.clone();
+
+            // 2. 收集 AST (可选，Interpreter 3.2 步骤已经手动处理了 Main AST，但为了 ModuleInfo 完整性最好加上)
+            let mut main_ast_defs = HashMap::new();
+            let mut main_ast_funcs = HashMap::new();
+
+            for item in &program.definitions {
+                match item {
+                    TopLevelItem::Table(def) => {
+                        main_ast_defs.insert(def.name, Rc::new(def.clone()));
+                    }
+                    TopLevelItem::Function(func) => {
+                        main_ast_funcs.insert(func.name, Rc::new(func.clone()));
+                    }
+                    _ => {}
+                }
+            }
+
+            // 3. 构建 ModuleInfo
+            let main_module_info = crate::analyzer::ModuleInfo {
+                file_id,
+                file_path: path.clone(), // 使用传入的 path (已经是绝对路径)
+                tables: main_tables,
+                functions: main_functions,
+                globals: main_globals,
+                ast_definitions: main_ast_defs,
+                ast_functions: main_ast_funcs,
+                program: Rc::new(program.clone()),
+            };
+
+            // 4. 插入 Context
+            self.ctx.modules.insert(path.clone(), main_module_info);
+        }
 
         // ==========================================
         // Step 3: Interpretation (解释执行)

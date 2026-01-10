@@ -132,13 +132,23 @@ impl<'a> Analyzer<'a> {
 
         // 3.1 填充字段 (Fields)
         for (f_name, f_info) in &parent_info.fields {
-            if !child_info.fields.contains_key(f_name) {
-                let new_type = f_info.ty.substitute(&type_mapping);
-                let new_field_info = crate::analyzer::info::FieldInfo {
-                    ty: new_type,
-                    span: f_info.span,
-                };
-                child_info.fields.insert(*f_name, new_field_info);
+            for (f_name, f_info) in &parent_info.fields {
+                // 如果子类没有覆盖该字段，则从父类拷贝
+                if !child_info.fields.contains_key(f_name) {
+                    let new_type = f_info.ty.substitute(&type_mapping);
+
+                    // [New] 这里的 value 也要处理吗？
+                    // 如果 value 表达式里包含泛型（比如 T()），理论上需要 AST 级别的替换。
+                    // 但 Loom v0.1 暂时可以只做浅拷贝。如果字段初始值是字面量，这完全没问题。
+                    let new_field_info = crate::analyzer::info::FieldInfo {
+                        ty: new_type,
+                        span: f_info.span,
+                        // [Key] 核心修复：Mixin 表达式！
+                        value: f_info.value.clone(),
+                    };
+
+                    child_info.fields.insert(*f_name, new_field_info);
+                }
             }
         }
 

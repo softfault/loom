@@ -141,6 +141,12 @@ pub enum SemanticErrorKind {
     // [New] 泛型参数遮蔽/重复
     // 比如 [Box<T>] map = <T>... (这里的 T 遮蔽了类的 T)
     GenericShadowing(String),
+
+    // [New] 类型转换非法 (源类型, 目标类型)
+    InvalidCast {
+        src: String,
+        target: String,
+    },
 }
 
 // === 手动实现 Display，替代 thiserror ===
@@ -323,6 +329,9 @@ impl fmt::Display for SemanticErrorKind {
                     "Generic parameter '{}' shadows an existing generic parameter from the class or outer scope",
                     name
                 )
+            }
+            SemanticErrorKind::InvalidCast { src, target } => {
+                write!(f, "Cannot cast type '{}' to '{}'", src, target)
             }
         }
     }

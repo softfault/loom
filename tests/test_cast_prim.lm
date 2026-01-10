@@ -1,0 +1,16 @@
+[main()]
+    # 1. Float -> Int (截断)
+    pi = 3.14159
+    approx = pi as int
+    print("pi as int: " + approx) # 期望: 3
+
+    # 2. Int -> Float
+    num = 10
+    f_num = num as float
+    print("10 as float: " + f_num) # 期望: 10 或 10.0
+
+    # 3. 表达式中的 as (优先级检查)
+    # 应该是 (1.5 as int) + 2 = 1 + 2 = 3
+    # 如果解析成 1.5 as (int + 2) 就会崩
+    res = 1.5 as int + 2
+    print("1.5 as int + 2 = " + res) # 期望: 3

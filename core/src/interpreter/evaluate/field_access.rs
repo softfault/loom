@@ -61,73 +61,30 @@ impl<'a> Interpreter<'a> {
         let mut current_table_id = start_id;
 
         loop {
-            // A. 获取当前类的 AST 定义
+            // 1. 查找定义
             let table_def = self.table_definitions.get(&current_table_id)?;
 
-            // B. 在当前类中查找方法
+            // 2. 查找方法
             for item in &table_def.data.items {
                 if let TableItem::Method(method_def) = item {
                     if method_def.name == method_name {
-                        // [Key Step] 找到了方法！现在查找它所属的模块环境
+                        // 找到了！获取环境
                         let file_id = current_table_id.file_id();
-
-                        // 从缓存中获取环境
-                        // 注意：这里必须能找到，因为代码能在运行说明模块肯定加载了
                         if let Some(Value::Module(_, env)) = self.module_cache.get(&file_id) {
                             return Some((method_def.clone(), env.clone()));
-                        } else {
-                            // 理论上不可能发生，除非 module_cache 被破坏
-                            return None;
                         }
+                        return None;
                     }
                 }
             }
 
-            // C. 没找到，尝试解析父类 (Prototype)
-            if let Some(parent_type_ref) = &table_def.data.prototype {
-                match &parent_type_ref.data {
-                    TypeRefData::Named(parent_sym) => {
-                        // 去全局变量环境查找父类
-                        if let Some(Value::Table(parent_id)) =
-                            self.globals.borrow().get(*parent_sym)
-                        {
-                            current_table_id = parent_id;
-                            continue;
-                        }
-                        break;
-                    }
-
-                    TypeRefData::GenericInstance { base, .. } => {
-                        if let Some(Value::Table(parent_id)) = self.globals.borrow().get(*base) {
-                            current_table_id = parent_id;
-                            continue;
-                        }
-                        break;
-                    }
-
-                    // Case 2: [New] 跨模块引用 [Dog : lib.Animal]
-                    TypeRefData::Member { module, member } => {
-                        // 1. 先在当前全局变量里找到模块对象 (比如 "animal_lib")
-                        // 这一步能成功是因为 'use animal_lib' 会在 globals 里注册一个 Value::Module
-                        if let Some(Value::Module(_, mod_env)) = self.globals.borrow().get(*module)
-                        {
-                            // 2. 去那个模块的环境里找到类 (比如 "Animal")
-                            if let Some(Value::Table(parent_id)) = mod_env.borrow().get(*member) {
-                                // 3. 切换到父类的 ID，进入下一次循环
-                                current_table_id = parent_id;
-                                continue;
-                            }
-                        }
-                        // 找不到模块或找不到类，断裂
-                        break;
-                    }
-                    _ => break,
-                }
+            // 3. [New] 使用公共逻辑查找父类，继续循环
+            if let Some(parent_id) = self.get_parent_table_id(current_table_id) {
+                current_table_id = parent_id;
             } else {
                 break;
             }
         }
-
         None
     }
 

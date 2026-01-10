@@ -253,16 +253,148 @@ impl<'a> Analyzer<'a> {
                     Type::Error
                 }
             }
+        }
+    }
 
-            // 其他未处理的操作符
+    // [New] 核心转换逻辑
+    fn check_cast_expr(
+        &mut self,
+        expr: &Expression,
+        target_type_ref: &TypeRef,
+        span: Span,
+    ) -> Type {
+        let source_ty = self.check_expression(expr);
+        let target_ty = self.resolve_ast_type(target_type_ref, &HashSet::new());
+
+        if source_ty == Type::Error || target_ty == Type::Error {
+            return Type::Error;
+        }
+
+        match (&source_ty, &target_ty) {
+            // 1. 同类型转换 (No-op)
+            (s, t) if s == t => target_ty,
+
+            // 2. 数值转换
+            (Type::Int, Type::Float) => target_ty,
+            (Type::Float, Type::Int) => target_ty,
+
+            // 3. 继承体系转换 (Upcast/Downcast)
+            (Type::Table(s_id), Type::Table(t_id)) => {
+                if self.is_subtype(*s_id, *t_id) || self.is_subtype(*t_id, *s_id) {
+                    return target_ty;
+                }
+                self.report_cast_error(span, &source_ty, &target_ty);
+                Type::Error
+            }
+
+            // 4. [Core Logic] 泛型实例转换 (List<Dog> as List<Animal>)
+            (
+                Type::GenericInstance {
+                    base: s_base,
+                    args: s_args,
+                },
+                Type::GenericInstance {
+                    base: t_base,
+                    args: t_args,
+                },
+            ) => {
+                // A. 基础类必须相同 (不能把 List<T> 转成 Map<T>)
+                if s_base != t_base {
+                    self.report_cast_error(span, &source_ty, &target_ty);
+                    return Type::Error;
+                }
+
+                // B. 参数数量必须一致
+                if s_args.len() != t_args.len() {
+                    // 这个通常在类型解析阶段就会报错，但防守一下
+                    self.report_cast_error(span, &source_ty, &target_ty);
+                    return Type::Error;
+                }
+
+                // C. 递归检查每一个参数是否可以 Cast
+                // 规则：对于泛型参数，我们允许协变 (Covariance) 和逆变 (Contravariance) 的 Cast
+                // 也就是只要 T1 可以 Cast 到 T2，那么 List<T1> 就可以 Cast 到 List<T2>
+                for (s_arg, t_arg) in s_args.iter().zip(t_args.iter()) {
+                    if !self.is_castable(s_arg, t_arg) {
+                        self.report_cast_error(span, &source_ty, &target_ty);
+                        return Type::Error;
+                    }
+                }
+
+                target_ty
+            }
+
+            // 5. 数组转换 ([Dog] as [Animal])
+            // 既然泛型都支持了，数组也应该支持
+            (Type::Array(s_inner), Type::Array(t_inner)) => {
+                if self.is_castable(s_inner, t_inner) {
+                    target_ty
+                } else {
+                    self.report_cast_error(span, &source_ty, &target_ty);
+                    Type::Error
+                }
+            }
+
             _ => {
-                self.report(
-                    span,
-                    SemanticErrorKind::Custom(format!("Operator {:?} not supported yet", op)),
-                );
+                self.report_cast_error(span, &source_ty, &target_ty);
                 Type::Error
             }
         }
+    }
+
+    /// [New] 辅助判断是否允许转换 (Check Only)
+    /// 这其实是 check_cast_expr 的逻辑复用版，但不报错，只返回 bool
+    fn is_castable(&mut self, src: &Type, target: &Type) -> bool {
+        if src == target {
+            return true;
+        }
+
+        match (src, target) {
+            (Type::Int, Type::Float) | (Type::Float, Type::Int) => true,
+
+            (Type::Table(s_id), Type::Table(t_id)) => {
+                self.is_subtype(*s_id, *t_id) || self.is_subtype(*t_id, *s_id)
+            }
+
+            (
+                Type::GenericInstance {
+                    base: s_base,
+                    args: s_args,
+                },
+                Type::GenericInstance {
+                    base: t_base,
+                    args: t_args,
+                },
+            ) => {
+                if s_base != t_base || s_args.len() != t_args.len() {
+                    return false;
+                }
+                for (s_arg, t_arg) in s_args.iter().zip(t_args.iter()) {
+                    if !self.is_castable(s_arg, t_arg) {
+                        return false;
+                    }
+                }
+                true
+            }
+
+            (Type::Array(s_inner), Type::Array(t_inner)) => self.is_castable(s_inner, t_inner),
+
+            _ => false,
+        }
+    }
+
+    fn report_cast_error(&mut self, span: Span, src: &Type, target: &Type) {
+        let s_str = src.display(&self.ctx).to_string();
+        let t_str = target.display(&self.ctx).to_string();
+
+        self.report(
+            span,
+            SemanticErrorKind::InvalidCast {
+                // [Fix] 使用专用错误类型
+                src: s_str,
+                target: t_str,
+            },
+        );
     }
 
     pub(super) fn check_range_expr(
@@ -347,6 +479,10 @@ impl<'a> Analyzer<'a> {
             // 赋值 (传入 span)
             ExpressionData::Assign { op, target, value } => {
                 self.check_assignment_expr(*op, target, value, expr.span)
+            }
+
+            ExpressionData::Cast { expr, target_type } => {
+                self.check_cast_expr(expr, target_type, expr.span)
             }
 
             // 变量定义 (let a: int = 1)

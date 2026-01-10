@@ -36,6 +36,8 @@ impl<'a> Parser<'a> {
             // --- 范围 (70) ---
             TokenKind::DotDot => Some(70),
 
+            TokenKind::As => Some(80),
+
             // --- 后缀 (90) ---
             TokenKind::LeftParen |      // Call
             TokenKind::LeftBracket |    // Index
@@ -113,6 +115,24 @@ impl<'a> Parser<'a> {
                         op: assign_op,
                         target: Box::new(lhs),
                         value: Box::new(rhs),
+                    },
+                    span,
+                );
+            }
+            // [New] 处理 as 类型转换
+            else if next_token.kind == TokenKind::As {
+                self.advance(); // 吃掉 'as'
+
+                // 解析右边的类型
+                // 注意：这里不是 parse_expression，而是 parse_type
+                let target_type = self.parse_type()?;
+
+                let span = lhs.span.to(target_type.span);
+
+                lhs = self.make_node(
+                    ExpressionData::Cast {
+                        expr: Box::new(lhs),
+                        target_type,
                     },
                     span,
                 );

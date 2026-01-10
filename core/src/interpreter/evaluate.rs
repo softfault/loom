@@ -77,6 +77,7 @@ impl<'a> Interpreter<'a> {
                 let end_val = require_ok!(self.evaluate(end));
                 EvalResult::Ok(Value::Range(Box::new(start_val), Box::new(end_val)))
             }
+            ExpressionData::Cast { expr, target_type } => self.eval_cast(expr, target_type),
 
             // [Error] 不支持的表达式
             _ => EvalResult::Err(RuntimeErrorKind::Internal(format!(
@@ -501,7 +502,103 @@ impl<'a> Interpreter<'a> {
     }
 
     // ==========================================
-    //          Section 5: Helpers
+    //          Section 5: Type Casting
+    // ==========================================
+
+    fn eval_cast(&mut self, expr: &Expression, target_type: &TypeRef) -> EvalResult {
+        let val = require_ok!(self.evaluate(expr));
+
+        // 如果是 Nil，通常允许转换为任何对象类型的 "空" (但 Loom 暂时没有 Nullable 语法，除了 Any)
+        // 简单起见，如果值是 Nil，直接返回 Nil (对应 Option 语义)
+        if matches!(val, Value::Nil) {
+            return EvalResult::Ok(Value::Nil);
+        }
+
+        match &target_type.data {
+            TypeRefData::Named(sym) => {
+                let type_name = self.ctx.resolve_symbol(*sym);
+
+                match type_name {
+                    // --- 基础类型转换 ---
+                    "int" => match val {
+                        Value::Float(f) => EvalResult::Ok(Value::Int(f as i64)),
+                        Value::Int(i) => EvalResult::Ok(Value::Int(i)),
+                        Value::Bool(b) => EvalResult::Ok(Value::Int(if b { 1 } else { 0 })),
+                        _ => self.runtime_cast_error(val, "int"),
+                    },
+                    "float" => match val {
+                        Value::Int(i) => EvalResult::Ok(Value::Float(i as f64)),
+                        Value::Float(f) => EvalResult::Ok(Value::Float(f)),
+                        _ => self.runtime_cast_error(val, "float"),
+                    },
+                    "str" => {
+                        // as str: 显式转字符串
+                        EvalResult::Ok(Value::Str(val.to_string(&self.ctx.interner)))
+                    }
+                    "bool" => match val {
+                        Value::Bool(b) => EvalResult::Ok(Value::Bool(b)),
+                        _ => self.runtime_cast_error(val, "bool"),
+                    },
+
+                    // --- 对象类型转换 (RTTI) ---
+                    _ => {
+                        if let Value::Instance(ref instance) = val {
+                            // 执行运行时类型检查
+                            // 检查 instance 是否是 target_name 的实例或子类
+                            if self.check_instance_of(instance, *sym) {
+                                EvalResult::Ok(val)
+                            } else {
+                                let src_type = self
+                                    .ctx
+                                    .resolve_symbol(instance.table_id.symbol())
+                                    .to_string();
+                                EvalResult::Err(RuntimeErrorKind::InvalidCast {
+                                    src: src_type,
+                                    target: type_name.to_string(),
+                                })
+                            }
+                        } else {
+                            // 试图把非 Instance 转换为 Class
+                            self.runtime_cast_error(val, type_name)
+                        }
+                    }
+                }
+            }
+            // 对于泛型、数组等复杂类型，Analyzer 已经保证了结构兼容性
+            // 运行时通常直接放行 (No-op)
+            _ => EvalResult::Ok(val),
+        }
+    }
+
+    /// 运行时类型检查 (Runtime Type Identification)
+    fn check_instance_of(&self, instance: &Instance, target_sym: Symbol) -> bool {
+        let mut current_id = instance.table_id;
+
+        loop {
+            // 比较 Symbol
+            if current_id.symbol() == target_sym {
+                return true;
+            }
+
+            // 向上查找
+            if let Some(parent_id) = self.get_parent_table_id(current_id) {
+                current_id = parent_id;
+            } else {
+                break;
+            }
+        }
+        false
+    }
+
+    fn runtime_cast_error(&self, val: Value, target: &str) -> EvalResult {
+        EvalResult::Err(RuntimeErrorKind::InvalidCast {
+            src: val.to_string(&self.ctx.interner),
+            target: target.to_string(),
+        })
+    }
+
+    // ==========================================
+    //          Section 6: Helpers
     // ==========================================
 
     fn is_truthy(&self, val: &Value) -> bool {

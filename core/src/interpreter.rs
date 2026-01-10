@@ -275,41 +275,73 @@ impl<'a> Interpreter<'a> {
 
     /// === 2. 实例化 Table ===
     fn instantiate_table(&mut self, def: &TableDefinition, file_id: FileId) -> EvalResult {
-        let mut fields = HashMap::new();
+        let mut fields_map = HashMap::new();
         let caller_env = self.environment.clone();
 
-        // 切换到全局环境执行字段初始化
+        let table_id = TableId(file_id, def.name);
+
+        // --- Step 1: 准备阶段 (只读) ---
+        // 我们在这个代码块里获取数据并克隆，代码块结束后，借用就释放了
+        let fields_to_init: Vec<(Symbol, Option<Expression>)> = {
+            let file_path = match self.ctx.source_manager.get_file_path(file_id) {
+                Some(p) => p,
+                None => {
+                    return EvalResult::Err(RuntimeErrorKind::Internal("File path missing".into()));
+                }
+            };
+
+            let mod_info = match self.ctx.modules.get(file_path) {
+                Some(m) => m,
+                None => {
+                    return EvalResult::Err(RuntimeErrorKind::Internal(
+                        "ModuleInfo missing".into(),
+                    ));
+                }
+            };
+
+            let table_info = match mod_info.tables.get(&table_id) {
+                Some(t) => t,
+                None => {
+                    return EvalResult::Err(RuntimeErrorKind::Internal(
+                        "TableInfo missing in output".into(),
+                    ));
+                }
+            };
+
+            table_info
+                .fields
+                .iter()
+                .map(|(name, info)| (*name, info.value.clone()))
+                .collect()
+        };
+
+        // --- Step 2: 执行阶段 (读写) ---
+        // 切换到全局环境
         self.environment = self.globals.clone();
 
-        for item in &def.data.items {
-            if let TableItem::Field(field_def) = item {
-                let value = if let Some(expr) = &field_def.value {
-                    match self.evaluate(expr) {
-                        EvalResult::Ok(v) => v,
-                        EvalResult::Return(_) | EvalResult::Break | EvalResult::Continue => {
-                            self.environment = caller_env;
-                            // [Fix] 结构化错误
-                            return EvalResult::Err(RuntimeErrorKind::Internal(
-                                "Control flow escapes field initialization".into(),
-                            ));
-                        }
-                        EvalResult::Err(e) => {
-                            self.environment = caller_env;
-                            return EvalResult::Err(e);
-                        }
+        // 现在我们可以安全地遍历 fields_to_init，因为它是独立的 Vec，不依赖 self
+        for (name, init_expr_opt) in fields_to_init {
+            let value = if let Some(expr) = &init_expr_opt {
+                // 现在调用 self.evaluate 是安全的，因为没有其他对 self 的引用了
+                match self.evaluate(expr) {
+                    EvalResult::Ok(v) => v,
+                    other => {
+                        self.environment = caller_env;
+                        return other;
                     }
-                } else {
-                    Value::Nil
-                };
-                fields.insert(field_def.name, value);
-            }
+                }
+            } else {
+                Value::Nil
+            };
+            fields_map.insert(name, value);
         }
 
+        // 恢复环境
         self.environment = caller_env;
 
         let instance = Rc::new(Instance {
-            table_id: TableId(file_id, def.name), // 唯一 ID
-            fields: RefCell::new(fields),
+            table_id,
+            fields: RefCell::new(fields_map),
         });
 
         EvalResult::Ok(Value::Instance(instance))
@@ -465,6 +497,60 @@ impl<'a> Interpreter<'a> {
             _ => EvalResult::Err(RuntimeErrorKind::NotCallable(
                 func.to_string(&self.ctx.interner),
             )),
+        }
+    }
+
+    /// [Core Helper] 获取指定 Table 的父类 TableId
+    /// 这一步封装了复杂的跨模块查找逻辑
+    fn get_parent_table_id(&self, table_id: TableId) -> Option<TableId> {
+        let def = self.table_definitions.get(&table_id)?;
+
+        // 1. 获取父类类型引用
+        let parent_ref = def.data.prototype.as_ref()?;
+
+        match &parent_ref.data {
+            // Case 1: 本地/已导入的具名引用 (Animal)
+            TypeRefData::Named(sym) => {
+                // 需要去定义该子类的模块环境中查找父类符号
+                // 1. 找到定义该 Table 的模块环境
+                let file_id = table_id.file_id();
+                if let Some(Value::Module(_, env)) = self.module_cache.get(&file_id) {
+                    // 2. 在该模块环境中查找符号
+                    if let Some(Value::Table(parent_id)) = env.borrow().get(*sym) {
+                        return Some(parent_id);
+                    }
+                }
+                None
+            }
+
+            // Case 2: 泛型实例 (List<T>) -> 实际上继承自 Base Table (List)
+            TypeRefData::GenericInstance { base, .. } => {
+                // 同上，去模块环境找 base
+                let file_id = table_id.file_id();
+                if let Some(Value::Module(_, env)) = self.module_cache.get(&file_id) {
+                    if let Some(Value::Table(parent_id)) = env.borrow().get(*base) {
+                        return Some(parent_id);
+                    }
+                }
+                None
+            }
+
+            // Case 3: 显式跨模块引用 (lib.Animal)
+            TypeRefData::Member { module, member } => {
+                let file_id = table_id.file_id();
+                if let Some(Value::Module(_, env)) = self.module_cache.get(&file_id) {
+                    // 1. 找模块对象 (animal_lib)
+                    if let Some(Value::Module(_, mod_env)) = env.borrow().get(*module) {
+                        // 2. 找导出类 (Animal)
+                        if let Some(Value::Table(parent_id)) = mod_env.borrow().get(*member) {
+                            return Some(parent_id);
+                        }
+                    }
+                }
+                None
+            }
+
+            _ => None,
         }
     }
 }
