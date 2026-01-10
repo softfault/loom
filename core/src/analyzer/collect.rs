@@ -37,53 +37,46 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    // [New] 收集顶层函数
-    // [Fix] 收集顶层函数 (严谨版)
+    // 收集顶层函数
     fn collect_top_level_function(&mut self, def: &MethodDefinition) {
         let name = def.name;
         let id = self.current_file_id;
 
-        // 1. 处理泛型 <T> (先建立泛型作用域，否则签名解析会失败)
+        // 1. 收集泛型参数名 (为了存入 FunctionInfo)
+        // 注意：这里只做收集，不做查重检查，查重交给 collect_method_signature 去做
         let mut generic_params = Vec::new();
-        let mut local_generics_scope = HashSet::new();
-
         for g in &def.generics {
-            if local_generics_scope.contains(&g.name) {
-                let name_str = self.ctx.resolve_symbol(g.name).to_string();
-                self.report(g.span, SemanticErrorKind::DuplicateDefinition(name_str));
-            } else {
-                generic_params.push(g.name);
-                local_generics_scope.insert(g.name);
-            }
+            generic_params.push(g.name);
         }
 
-        // 2. 解析签名 (拿到具体的 params 和 ret 类型)
-        // 注意：这里我们传入了 local_generics_scope，确保签名里的 T 能被识别
-        let signature = self.collect_method_signature(def, &local_generics_scope);
+        // 2. 准备“外部”泛型作用域
+        // 对于顶层函数，外部没有泛型（没有 Class<T>），所以是空的
+        let parent_scope = HashSet::new();
 
-        // 3. [关键] 构造真正的函数类型
-        // 将 FunctionSignature 转换为 Type::Function
+        // 3. 解析签名
+        // collect_method_signature 会自动处理 def.generics，把它加入到 parent_scope 中用于解析参数
+        // 所以我们传入空的 parent_scope 即可
+        let signature = self.collect_method_signature(def, &parent_scope);
+
+        // 4. 构造函数类型 (Type::Function)
+        // 记得带上 generic_params
         let func_type = Type::Function {
+            generic_params: generic_params.clone(),
             params: signature.params.iter().map(|(_, t)| t.clone()).collect(),
             ret: Box::new(signature.ret.clone()),
         };
 
-        // 4. 注册符号到作用域 (Function Kind)
-        // 现在注册的是真正的 func_type，而不是 Type::Unit
-        if let Err(_) = self.scopes.define(
-            name,
-            func_type, // <--- 这里修复了 "Type '()' is not callable"
-            SymbolKind::Function,
-            def.span,
-            id,
-            false,
-        ) {
+        // 5. 注册符号
+        if let Err(_) =
+            self.scopes
+                .define(name, func_type, SymbolKind::Function, def.span, id, false)
+        {
             let name_str = self.ctx.resolve_symbol(name).to_string();
             self.report(def.span, SemanticErrorKind::DuplicateDefinition(name_str));
             return;
         }
 
-        // 5. 存入 Analyzer 的顶层函数表 (用于 Check 阶段和 Interpreter 查找 AST)
+        // 6. 存入 Analyzer 表
         let info = FunctionInfo {
             name,
             generic_params,

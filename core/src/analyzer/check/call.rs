@@ -139,6 +139,7 @@ impl<'a> Analyzer<'a> {
                 // 参数：来自 init
                 // 返回值：来自 instance_type (这是关键！构造函数返回实例，而不是 init 的 void)
                 let constructor_func_ty = Type::Function {
+                    generic_params: vec![],
                     params: init_params,
                     ret: Box::new(instance_type),
                 };
@@ -149,21 +150,69 @@ impl<'a> Analyzer<'a> {
 
             // === Case B: 普通函数调用 ===
             // 语法: print("hello") 或 arr.push(1)
-            Type::Function { .. } => {
-                // 目前 Loom v0.1 的 Function 类型不存储泛型定义 (<T>)
-                // 所以如果用户写 func<int>()，我们无法处理，必须报错
+            Type::Function {
+                generic_params,
+                params,
+                ret,
+            } => {
+                // 情况 1: 用户提供了泛型参数 func<int>()
                 if !resolved_generics.is_empty() {
+                    // 1.1 检查泛型参数数量
+                    if resolved_generics.len() != generic_params.len() {
+                        self.report(
+                            callee.span,
+                            SemanticErrorKind::GenericArgumentCountMismatch {
+                                name: "<function>".into(),
+                                expected: generic_params.len(),
+                                found: resolved_generics.len(),
+                            },
+                        );
+                        return Type::Error;
+                    }
+
+                    // 1.2 构建替换表 { T -> int }
+                    let mut type_mapping = std::collections::HashMap::new();
+                    for (i, param_sym) in generic_params.iter().enumerate() {
+                        type_mapping.insert(*param_sym, resolved_generics[i].clone());
+                    }
+
+                    // 1.3 实例化：替换参数和返回值类型
+                    let instantiated_params: Vec<Type> =
+                        params.iter().map(|p| p.substitute(&type_mapping)).collect();
+
+                    let instantiated_ret = ret.substitute(&type_mapping);
+
+                    // 1.4 构造一个新的实例化后的函数类型用于检查 (无泛型了)
+                    let func_instance = Type::Function {
+                        generic_params: vec![], // 已实例化，清空泛型列表
+                        params: instantiated_params,
+                        ret: Box::new(instantiated_ret),
+                    };
+
+                    // 1.5 转交到底层检查
+                    return self.check_call(func_instance, args, callee.span);
+                }
+
+                // 情况 2: 用户没提供泛型参数 func()
+                // 如果函数本身是泛型的 (generic_params 不为空)，这通常是不允许的（除非支持推导）
+                if !generic_params.is_empty() {
+                    // 简单起见，v0.2 要求显式泛型
                     self.report(
                         callee.span,
                         SemanticErrorKind::Custom(
-                            "Generic arguments on functions are not supported yet (only on Types)"
-                                .into(),
-                        ),
-                    );
+                            "Generic function requires explicit type arguments (e.g. func<int>(...))".into()
+                        )
+                     );
                     return Type::Error;
                 }
 
-                self.check_call(callee_ty, args, callee.span)
+                // 情况 3: 普通非泛型函数
+                let func_ty = Type::Function {
+                    generic_params,
+                    params,
+                    ret,
+                };
+                self.check_call(func_ty, args, callee.span)
             }
 
             // === Case C: 错误传播 ===
@@ -187,12 +236,14 @@ impl<'a> Analyzer<'a> {
                 match field_name {
                     // [修改] len 现在是一个函数: () -> int
                     "len" => Some(Type::Function {
+                        generic_params: vec![],
                         params: vec![], // 调用者不需要传参数 (self 是隐式的)
                         ret: Box::new(Type::Int),
                     }),
 
                     // push: (T) -> ()
                     "push" => Some(Type::Function {
+                        generic_params: vec![],
                         params: vec![*inner.clone()],
                         ret: Box::new(Type::Unit),
                     }),
@@ -204,6 +255,7 @@ impl<'a> Analyzer<'a> {
                 match field_name {
                     // [修改] len 现在是一个函数: () -> int
                     "len" => Some(Type::Function {
+                        generic_params: vec![],
                         params: vec![],
                         ret: Box::new(Type::Int),
                     }),
@@ -304,6 +356,7 @@ impl<'a> Analyzer<'a> {
                 .collect();
 
             return Type::Function {
+                generic_params: func_info.generic_params.clone(),
                 params,
                 ret: Box::new(func_info.signature.ret.clone()),
             };
@@ -377,7 +430,7 @@ impl<'a> Analyzer<'a> {
         if let Some(method_info) = table_info.methods.get(&field) {
             let sig = &method_info.signature;
 
-            // 替换参数类型
+            // 替换参数类型 (应用类泛型 T 的替换，例如 Box<int> 把 T 换成 int)
             let new_params = sig
                 .params
                 .iter()
@@ -388,6 +441,10 @@ impl<'a> Analyzer<'a> {
             let new_ret = sig.ret.substitute(&type_mapping);
 
             return Type::Function {
+                // [Fix] 必须保留方法自己的泛型定义！
+                // 例如: [Box<T>] map<U>(f: Function<T, U>) -> Box<U>
+                // 这里 T 被替换了，但 U 还是方法的泛型，必须保留
+                generic_params: method_info.generic_params.clone(),
                 params: new_params,
                 ret: Box::new(new_ret),
             };
@@ -409,7 +466,7 @@ impl<'a> Analyzer<'a> {
         call_span: crate::utils::Span,
     ) -> Type {
         match func_ty {
-            Type::Function { params, ret } => {
+            Type::Function { params, ret, .. } => {
                 // 1. 检查参数数量
                 if args.len() != params.len() {
                     self.report(

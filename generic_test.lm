@@ -1,0 +1,23 @@
+# 定义“盒子”
+[Box<T>]
+val: T 
+set = (new_val: T)
+    self.val = new_val
+get = () T
+    return self.val
+
+# 定义泛型打印函数
+[print_it<U>(item: U)]
+    print("Printer says: " + item)
+
+# 入口函数
+[main()]
+    i_box = Box<int>()
+    i_box.set(100)
+    print("Int Box: " + i_box.get())
+
+    s_box = Box<str>()
+    s_box.set("Hello Generics")
+    print("Str Box: " + s_box.get())
+
+    print_it<str>("World")

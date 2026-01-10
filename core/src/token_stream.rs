@@ -25,9 +25,6 @@ impl<'a> TokenStream<'a> {
         while self.buffer.len() <= n {
             let tok = self.lexer.next_token();
 
-            // [关键修改] 不要再手动加 offset 了！
-            // Lexer 产生的 tok.span (例如 0..5) 就是相对于当前 source 字符串的正确位置。
-
             self.buffer.push_back(tok);
             if tok.kind == TokenKind::EOF {
                 break;

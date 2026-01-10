@@ -23,8 +23,8 @@ pub type ParseResult<T> = Result<T, ParseError>;
 
 pub struct Parser<'a> {
     source: &'a str,
-    stream: crate::token_stream::TokenStream<'a>, // 使用你之前的 TokenStream
-    pub errors: Vec<ParseError>,                  // 收集错误
+    stream: crate::token_stream::TokenStream<'a>,
+    pub errors: Vec<ParseError>, // 收集错误
 
     previous_kind: TokenKind,
     node_id_counter: u32,
@@ -189,15 +189,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // --- 字符串 Unescape (你的实现很棒，保留) ---
+    // --- 字符串 Unescape ---
     pub fn unescape_string(&self, raw: &str) -> String {
-        // ... (保留你原有的逻辑)
         let mut result = String::new();
         let mut chars = raw.chars().peekable();
-        // ... (为了节省篇幅省略，直接复用你的)
-        // 注意：Loom 的字符串字面量通常包含引号，这里记得去掉首尾引号再处理，
-        // 或者在 Lexer 阶段就去掉。通常这里 raw 是带引号的。
-        // 如果 raw 带引号：
         let inner = if raw.len() >= 2 && (raw.starts_with('"') || raw.starts_with('\'')) {
             &raw[1..raw.len() - 1]
         } else {

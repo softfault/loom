@@ -1,9 +1,9 @@
-# tests/math_lib.lm
+# 定义一个简单的数学库
+
 PI = 3.14159
 
 [add(a: int, b: int) int]
     return a + b
 
 [circle_area(r: float) float]
-    # 这里测试模块内部函数调用模块内部变量
     return PI * r * r

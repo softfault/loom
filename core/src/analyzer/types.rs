@@ -39,6 +39,7 @@ pub enum Type {
 
     /// 函数/方法类型
     Function {
+        generic_params: Vec<Symbol>,
         params: Vec<Type>,
         ret: Box<Type>,
     },
@@ -113,33 +114,41 @@ impl Type {
             (Type::Array(t1), Type::Array(t2)) => t1.is_assignable_from(t2),
             (
                 Type::Function {
+                    generic_params: t_gens, // Target
                     params: t_params,
                     ret: t_ret,
                 },
                 Type::Function {
+                    generic_params: s_gens, // Source
                     params: s_params,
                     ret: s_ret,
                 },
             ) => {
-                // 1. 参数数量必须一致
+                // 如果一个有泛型一个没泛型，或者数量不对，直接认为不兼容
+                if t_gens.len() != s_gens.len() {
+                    return false;
+                }
+
+                // 如果都有泛型 (例如 <T> vs <U>)
+                // 严格的 Alpha-conversion 检查太复杂。
+                // 在这里我们做一个简化假设：只有当它们是同一个泛型定义时才兼容。
+                // 但实际上，check_call 阶段会先实例化再检查。
+                // 所以这里主要处理把函数当值传递的情况。
+
+                // 2. 参数数量检查
                 if t_params.len() != s_params.len() {
                     return false;
                 }
 
-                // 2. 参数检查：逆变 (Contravariance)
-                // 规则：Source 的参数必须是 Target 参数的父类 (或相同)
-                // 即：Source.param.is_assignable_from(Target.param)
+                // 3. 参数逆变检查
                 for (i, t_param) in t_params.iter().enumerate() {
                     let s_param = &s_params[i];
-                    // 注意这里的顺序！是用 Source 去容纳 Target 的输入
                     if !s_param.is_assignable_from(t_param) {
                         return false;
                     }
                 }
 
-                // 3. 返回值检查：协变 (Covariance)
-                // 规则：Source 的返回值必须是 Target 返回值的子类 (或相同)
-                // 即：Target.ret.is_assignable_from(Source.ret)
+                // 4. 返回值协变检查
                 if !t_ret.is_assignable_from(s_ret) {
                     return false;
                 }
@@ -214,9 +223,37 @@ impl Type {
 
             Type::Range(inner) => format!("Range<{}>", inner.to_string(interner)),
 
-            Type::Function { params, ret } => {
-                let p_str: Vec<_> = params.iter().map(|p| p.to_string(interner)).collect();
-                format!("({}) -> {}", p_str.join(", "), ret.to_string(interner))
+            Type::Function {
+                generic_params,
+                params,
+                ret,
+            } => {
+                let mut res = String::new();
+
+                // 1. 如果有泛型，打印 <T, U>
+                if !generic_params.is_empty() {
+                    res.push('<');
+                    let gen_strs: Vec<String> = generic_params
+                        .iter()
+                        .map(|sym| interner.resolve(*sym).to_string())
+                        .collect();
+                    res.push_str(&gen_strs.join(", "));
+                    res.push('>');
+                }
+
+                // 2. 打印参数 (p1, p2)
+                let p_str: Vec<String> = params
+                    .iter()
+                    .map(|p| p.to_string(interner)) // 递归调用
+                    .collect();
+
+                // 3. 组合
+                format!(
+                    "{}({}) -> {}",
+                    res,
+                    p_str.join(", "),
+                    ret.to_string(interner)
+                )
             }
 
             Type::Structural(_) => "{ ... }".to_string(),
@@ -326,13 +363,29 @@ impl<'a> fmt::Display for TypePrinter<'a> {
 
             Type::Range(inner) => write!(f, "Range<{}>", inner.display(self.ctx)),
 
-            Type::Function { params, ret } => {
+            Type::Function {
+                generic_params,
+                params,
+                ret,
+            } => {
+                // 如果有泛型，显示 <T, U>
+                if !generic_params.is_empty() {
+                    write!(f, "<")?;
+                    for (i, p) in generic_params.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", interner.resolve(*p))?;
+                    }
+                    write!(f, ">")?;
+                }
+
                 write!(f, "(")?;
-                for (i, p) in params.iter().enumerate() {
+                for (i, param) in params.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}", p.display(self.ctx))?;
+                    write!(f, "{}", param.display(self.ctx))?;
                 }
                 write!(f, ") -> {}", ret.display(self.ctx))
             }

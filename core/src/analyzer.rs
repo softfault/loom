@@ -93,6 +93,7 @@ impl<'a> Analyzer<'a> {
         let print_sym = self.ctx.intern("print");
 
         let print_type = Type::Function {
+            generic_params: vec![],
             params: vec![Type::Any],
             ret: Box::new(Type::Unit),
         };

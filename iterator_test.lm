@@ -1,19 +1,12 @@
-[Main]
-main = () int
-    # 1. String Iteration
+[main()]
     string = "Loom"
     print("Iterating String:")
     for c in string
         print(c)
 
-    # 2. Range Iteration (Lazy)
     print("Iterating Range:")
     sum = 0
-    # 这不会分配内存，直接迭代
     for i in 0..5
         print(i)
         sum = sum + i
-    
     print("Sum: " + sum)
-
-    return 0
