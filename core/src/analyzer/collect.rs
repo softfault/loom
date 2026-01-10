@@ -505,6 +505,12 @@ impl<'a> Analyzer<'a> {
                 // 但在这个阶段我们只负责转换类型，返回 Error 让 Check 阶段去报错
                 Type::Error
             }
+            // 处理数组类型
+            // 递归解析内部类型： [int] -> Array(Int)
+            TypeRefData::Array(inner) => {
+                let resolved_inner = self.resolve_ast_type(inner, valid_generics);
+                Type::Array(Box::new(resolved_inner))
+            }
         }
     }
 }

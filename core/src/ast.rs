@@ -106,7 +106,10 @@ pub enum TypeRefData {
     /// 基础类型: int, bool, str
     Named(Symbol),
     /// 泛型实例化: List<int>
-    GenericInstance { base: Symbol, args: Vec<TypeRef> },
+    GenericInstance {
+        base: Symbol,
+        args: Vec<TypeRef>,
+    },
     /// 结构化类型: { name: str }
     Structural(Vec<Param>),
     // 模块成员类型: std.io.File, lib.Animal
@@ -115,6 +118,9 @@ pub enum TypeRefData {
         module: Symbol, // e.g. "animal_lib"
         member: Symbol, // e.g. "Animal"
     },
+    // 数组类型
+    // 对应语法: [int], [[str]]
+    Array(Box<TypeRef>),
 }
 pub type TypeRef = Node<TypeRefData>;
 

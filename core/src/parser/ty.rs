@@ -13,6 +13,24 @@ impl<'a> Parser<'a> {
     pub fn parse_type(&mut self) -> ParseResult<TypeRef> {
         let start_span = self.peek().span;
 
+        // [NEW] 0. 数组类型 (Array Type): [int] or [[str]]
+        // 递归解析，天然支持多维数组
+        if self.check(TokenKind::LeftBracket) {
+            self.advance(); // consume '['
+
+            // 递归解析内部类型
+            let inner_type = self.parse_type()?;
+
+            // 必须以 ']' 结尾
+            self.expect(TokenKind::RightBracket)?;
+
+            let end_span = self.previous_span();
+            return Ok(self.make_node(
+                TypeRefData::Array(Box::new(inner_type)),
+                start_span.to(end_span),
+            ));
+        }
+
         // 1. 结构化类型 (Structural Type): { name: str }
         if self.check(TokenKind::LeftBrace) {
             return self.parse_structural_type();

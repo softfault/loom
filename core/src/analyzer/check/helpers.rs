@@ -50,6 +50,13 @@ impl<'a> Analyzer<'a> {
 
             // Case C: 模块类型兼容性 (通常模块不能赋值，或者是单例)
             // (Type::Module(id1), Type::Module(id2)) => id1 == id2,
+            // Case D: 数组协变检查
+            // 允许 [Dog] 赋值给 [Animal]
+            (Type::Array(target_inner), Type::Array(source_inner)) => {
+                // 递归调用 check_type_compatibility
+                // 这样能利用已有的 is_subtype 逻辑处理内部元素
+                self.check_type_compatibility(target_inner, source_inner)
+            }
             _ => false,
         }
     }

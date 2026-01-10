@@ -42,7 +42,10 @@ impl<'a> Analyzer<'a> {
 
         for (i, expr) in elements.iter().enumerate().skip(1) {
             let ty = self.check_expression(expr);
-            if !first_ty.is_assignable_from(&ty) {
+
+            // 使用 check_type_compatibility 以支持继承关系的数组元素
+            // 例如: [Animal, Dog] -> Animal 兼容 Dog
+            if !self.check_type_compatibility(&first_ty, &ty) {
                 let expected_str = first_ty.display(&self.ctx).to_string();
                 let found_str = ty.display(&self.ctx).to_string();
 

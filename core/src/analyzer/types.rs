@@ -129,12 +129,6 @@ impl Type {
                     return false;
                 }
 
-                // 如果都有泛型 (例如 <T> vs <U>)
-                // 严格的 Alpha-conversion 检查太复杂。
-                // 在这里我们做一个简化假设：只有当它们是同一个泛型定义时才兼容。
-                // 但实际上，check_call 阶段会先实例化再检查。
-                // 所以这里主要处理把函数当值传递的情况。
-
                 // 2. 参数数量检查
                 if t_params.len() != s_params.len() {
                     return false;
