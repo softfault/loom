@@ -13,6 +13,12 @@ pub struct Environment {
     pub enclosing: Option<Rc<RefCell<Environment>>>,
 }
 
+impl Default for Environment {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Environment {
     pub fn new() -> Self {
         Self {
@@ -48,8 +54,8 @@ impl Environment {
     /// 赋值 (a = 2)
     /// 返回 true 表示赋值成功，false 表示变量未定义
     pub fn assign(&mut self, name: Symbol, value: Value) -> bool {
-        if self.values.contains_key(&name) {
-            self.values.insert(name, value);
+        if let std::collections::hash_map::Entry::Occupied(mut e) = self.values.entry(name) {
+            e.insert(value);
             return true;
         }
         if let Some(enclosing) = &self.enclosing {

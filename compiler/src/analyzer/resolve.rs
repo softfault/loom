@@ -72,12 +72,11 @@ impl<'a> Analyzer<'a> {
             // 2. 递归解析父类
             // [Critical] 只有当父类也在当前文件时，才需要递归 resolve_table
             // 如果父类在外部文件，说明那个文件已经分析过了 (Status: Resolved)，不需要再跑 resolve_table
-            if parent_id.file_id() == self.current_file_id {
-                if self.resolve_table(parent_id, resolved, visiting).is_err() {
+            if parent_id.file_id() == self.current_file_id
+                && self.resolve_table(parent_id, resolved, visiting).is_err() {
                     visiting.remove(&table_id);
                     return Err(());
                 }
-            }
 
             // 3. 执行填充 (The Static Copy)
             // 无论是本地还是外部，都执行这个！
@@ -130,7 +129,7 @@ impl<'a> Analyzer<'a> {
         let child_info = self.tables.get_mut(&child_id).unwrap();
 
         // 3.1 填充字段 (Fields)
-        for (f_name, f_info) in &parent_info.fields {
+        for _f_info in parent_info.fields.values() {
             for (f_name, f_info) in &parent_info.fields {
                 // 如果子类没有覆盖该字段，则从父类拷贝
                 if !child_info.fields.contains_key(f_name) {
@@ -183,7 +182,7 @@ impl<'a> Analyzer<'a> {
         self.tables
             .get(&id)
             .map(|t| t.defined_span)
-            .unwrap_or_else(|| crate::utils::Span::default())
+            .unwrap_or_default()
     }
 
     /// [New] 跨文件获取 TableInfo

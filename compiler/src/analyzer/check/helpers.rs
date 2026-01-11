@@ -96,8 +96,8 @@ impl<'a> Analyzer<'a> {
             return;
         }
 
-        let expected_str = expected.display(&self.ctx).to_string();
-        let found_str = found.display(&self.ctx).to_string();
+        let expected_str = expected.display(self.ctx).to_string();
+        let found_str = found.display(self.ctx).to_string();
 
         self.report(
             span,

@@ -13,6 +13,12 @@ pub struct ScopeManager {
     pub scopes: Vec<Scope>,
 }
 
+impl Default for ScopeManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ScopeManager {
     pub fn new() -> Self {
         Self {
@@ -47,11 +53,10 @@ impl ScopeManager {
     ) -> Result<(), SymbolKind> {
         let current_scope = self.scopes.last_mut().unwrap();
 
-        if !allow_shadow {
-            if let Some(existing) = current_scope.symbols.get(&name) {
+        if !allow_shadow
+            && let Some(existing) = current_scope.symbols.get(&name) {
                 return Err(existing.kind.clone());
             }
-        }
 
         current_scope.symbols.insert(
             name,

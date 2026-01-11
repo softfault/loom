@@ -46,8 +46,8 @@ impl<'a> Analyzer<'a> {
             // 使用 check_type_compatibility 以支持继承关系的数组元素
             // 例如: [Animal, Dog] -> Animal 兼容 Dog
             if !self.check_type_compatibility(&first_ty, &ty) {
-                let expected_str = first_ty.display(&self.ctx).to_string();
-                let found_str = ty.display(&self.ctx).to_string();
+                let expected_str = first_ty.display(self.ctx).to_string();
+                let found_str = ty.display(self.ctx).to_string();
 
                 self.report(
                     expr.span,
@@ -82,7 +82,7 @@ impl<'a> Analyzer<'a> {
                 if ty == Type::Int || ty == Type::Float {
                     ty
                 } else {
-                    let ty_str = ty.display(&self.ctx).to_string();
+                    let ty_str = ty.display(self.ctx).to_string();
                     self.report(
                         operand.span,
                         SemanticErrorKind::InvalidUnaryOperand {
@@ -97,7 +97,7 @@ impl<'a> Analyzer<'a> {
                 if ty == Type::Bool {
                     Type::Bool
                 } else {
-                    let ty_str = ty.display(&self.ctx).to_string();
+                    let ty_str = ty.display(self.ctx).to_string();
                     self.report(
                         operand.span,
                         SemanticErrorKind::InvalidUnaryOperand {
@@ -154,8 +154,8 @@ impl<'a> Analyzer<'a> {
                 }
 
                 // 错误处理
-                let l_str = left.display(&self.ctx).to_string();
-                let r_str = right.display(&self.ctx).to_string();
+                let l_str = left.display(self.ctx).to_string();
+                let r_str = right.display(self.ctx).to_string();
                 self.report(
                     span,
                     SemanticErrorKind::InvalidBinaryOperand {
@@ -173,8 +173,8 @@ impl<'a> Analyzer<'a> {
                         return Type::Int;
                     }
                     // 友好的报错
-                    let l_str = left.display(&self.ctx).to_string();
-                    let r_str = right.display(&self.ctx).to_string();
+                    let l_str = left.display(self.ctx).to_string();
+                    let r_str = right.display(self.ctx).to_string();
                     self.report(
                         span,
                         SemanticErrorKind::InvalidBinaryOperand {
@@ -193,8 +193,8 @@ impl<'a> Analyzer<'a> {
                     return Type::Float;
                 }
 
-                let l_str = left.display(&self.ctx).to_string();
-                let r_str = right.display(&self.ctx).to_string();
+                let l_str = left.display(self.ctx).to_string();
+                let r_str = right.display(self.ctx).to_string();
                 self.report(
                     span,
                     SemanticErrorKind::InvalidBinaryOperand {
@@ -217,8 +217,8 @@ impl<'a> Analyzer<'a> {
                 if left.is_numeric() && right.is_numeric() {
                     Type::Bool
                 } else {
-                    let l_str = left.display(&self.ctx).to_string();
-                    let r_str = right.display(&self.ctx).to_string();
+                    let l_str = left.display(self.ctx).to_string();
+                    let r_str = right.display(self.ctx).to_string();
                     self.report(
                         span,
                         SemanticErrorKind::InvalidBinaryOperand {
@@ -236,8 +236,8 @@ impl<'a> Analyzer<'a> {
                 if left == Type::Bool && right == Type::Bool {
                     Type::Bool
                 } else {
-                    let l_str = left.display(&self.ctx).to_string();
-                    let r_str = right.display(&self.ctx).to_string();
+                    let l_str = left.display(self.ctx).to_string();
+                    let r_str = right.display(self.ctx).to_string();
                     self.report(
                         span,
                         SemanticErrorKind::InvalidBinaryOperand {
@@ -384,8 +384,8 @@ impl<'a> Analyzer<'a> {
     }
 
     fn report_cast_error(&mut self, span: Span, src: &Type, target: &Type) {
-        let s_str = src.display(&self.ctx).to_string();
-        let t_str = target.display(&self.ctx).to_string();
+        let s_str = src.display(self.ctx).to_string();
+        let t_str = target.display(self.ctx).to_string();
 
         self.report(
             span,

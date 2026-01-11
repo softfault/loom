@@ -18,7 +18,7 @@ impl<'a> Analyzer<'a> {
         match target_ty {
             Type::Array(inner) => {
                 if index_ty != Type::Int {
-                    let ty_str = index_ty.display(&self.ctx).to_string();
+                    let ty_str = index_ty.display(self.ctx).to_string();
                     self.report(
                         index.span,
                         SemanticErrorKind::InvalidIndexType(format!(
@@ -39,7 +39,7 @@ impl<'a> Analyzer<'a> {
                 Type::Str
             }
             _ => {
-                let ty_str = target_ty.display(&self.ctx).to_string();
+                let ty_str = target_ty.display(self.ctx).to_string();
                 self.report(target.span, SemanticErrorKind::TypeNotIndexable(ty_str));
                 Type::Error
             }
@@ -220,7 +220,7 @@ impl<'a> Analyzer<'a> {
 
             // === Case D: 其他类型不可调用 ===
             _ => {
-                let ty_str = callee_ty.display(&self.ctx).to_string();
+                let ty_str = callee_ty.display(self.ctx).to_string();
                 self.report(callee.span, SemanticErrorKind::NotCallable(ty_str));
                 Type::Error
             }
@@ -503,7 +503,7 @@ impl<'a> Analyzer<'a> {
             Type::Error => Type::Error,
 
             _ => {
-                let ty_str = func_ty.display(&self.ctx).to_string();
+                let ty_str = func_ty.display(self.ctx).to_string();
                 self.report(call_span, SemanticErrorKind::NotCallable(ty_str));
                 Type::Error
             }

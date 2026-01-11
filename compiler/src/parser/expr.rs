@@ -61,14 +61,13 @@ impl<'a> Parser<'a> {
             }
 
             // 特殊检查：如果遇到 '<'，先判断它是泛型还是小于号
-            if next_token.kind == TokenKind::LessThan {
-                if self.looks_like_generic_args() {
+            if next_token.kind == TokenKind::LessThan
+                && self.looks_like_generic_args() {
                     // 这是一个泛型调用！转交给 postfix 处理
                     lhs = self.parse_postfix_generic(lhs)?;
                     continue; // 继续下一次循环
                 }
                 // 否则，它是小于号，继续下面的 op_bp 逻辑
-            }
 
             let op_bp = match self.get_binding_power(next_token.kind) {
                 Some(bp) if bp >= min_bp => bp,

@@ -28,7 +28,7 @@ fn expect_array(
     index: usize,
 ) -> Result<&std::cell::RefCell<Vec<Value>>, RuntimeErrorKind> {
     match args.get(index) {
-        Some(Value::Array(arr)) => Ok(&arr),
+        Some(Value::Array(arr)) => Ok(arr),
         Some(other) => Err(RuntimeErrorKind::TypeError {
             expected: "Array".into(),
             found: other_type_name(other),
@@ -62,7 +62,7 @@ fn other_type_name(v: &Value) -> String {
         Value::Float(_) => "float",
         Value::Str(_) => "str",
         Value::Array(_) => "Array",
-        Value::Instance(i) => "Instance", // 这里虽然没办法拿 Interner，但这是 Native 层的简略报错
+        Value::Instance(_i) => "Instance", // 这里虽然没办法拿 Interner，但这是 Native 层的简略报错
         _ => "unknown",
     }
     .to_string()

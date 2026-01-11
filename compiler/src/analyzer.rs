@@ -120,12 +120,11 @@ impl<'a> Analyzer<'a> {
         }
 
         // 2. 如果没找到，去 ctx.modules 查
-        if let Some(path) = self.ctx.source_manager.get_file_path(id.file_id()) {
-            if let Some(module) = self.ctx.modules.get(path) {
+        if let Some(path) = self.ctx.source_manager.get_file_path(id.file_id())
+            && let Some(module) = self.ctx.modules.get(path) {
                 // [Fix] 直接用 id 查
                 return module.tables.get(&id).cloned();
             }
-        }
 
         None
     }

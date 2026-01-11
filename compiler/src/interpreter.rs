@@ -390,9 +390,7 @@ impl<'a> Interpreter<'a> {
                 let func_def = match self.function_definitions.get(&(file_id, func_name)) {
                     Some(def) => def.clone(),
                     None => {
-                        return EvalResult::Err(RuntimeErrorKind::Internal(format!(
-                            "Function AST not found"
-                        )));
+                        return EvalResult::Err(RuntimeErrorKind::Internal("Function AST not found".to_string()));
                     }
                 };
 
@@ -470,11 +468,10 @@ impl<'a> Interpreter<'a> {
             TypeRefData::GenericInstance { base, .. } => {
                 // 同上，去模块环境找 base
                 let file_id = table_id.file_id();
-                if let Some(Value::Module(_, env)) = self.module_cache.get(&file_id) {
-                    if let Some(Value::Table(parent_id)) = env.borrow().get(*base) {
+                if let Some(Value::Module(_, env)) = self.module_cache.get(&file_id)
+                    && let Some(Value::Table(parent_id)) = env.borrow().get(*base) {
                         return Some(parent_id);
                     }
-                }
                 None
             }
 

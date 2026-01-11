@@ -19,7 +19,7 @@ impl<'a> Interpreter<'a> {
             val @ Value::Str(_) | val @ Value::Array(_) => self.access_native_member(val, field),
 
             _ => {
-                let field_name = self.ctx.resolve_symbol(field);
+                let _field_name = self.ctx.resolve_symbol(field);
                 // 试图访问比如 1.length，这是类型错误
                 EvalResult::Err(RuntimeErrorKind::TypeError {
                     expected: "Instance, Module, String or Array".into(),
@@ -66,8 +66,8 @@ impl<'a> Interpreter<'a> {
 
             // 2. 查找方法
             for item in &table_def.data.items {
-                if let TableItem::Method(method_def) = item {
-                    if method_def.name == method_name {
+                if let TableItem::Method(method_def) = item
+                    && method_def.name == method_name {
                         // 找到了！获取环境
                         let file_id = current_table_id.file_id();
                         if let Some(Value::Module(_, env)) = self.module_cache.get(&file_id) {
@@ -75,7 +75,6 @@ impl<'a> Interpreter<'a> {
                         }
                         return None;
                     }
-                }
             }
 
             // 3. [New] 使用公共逻辑查找父类，继续循环

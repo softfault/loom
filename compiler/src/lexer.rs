@@ -42,12 +42,11 @@ impl<'a> Lexer<'a> {
     }
 
     fn match_char(&mut self, expected: char) -> bool {
-        if let Some(&c) = self.chars.peek() {
-            if c == expected {
+        if let Some(&c) = self.chars.peek()
+            && c == expected {
                 self.advance();
                 return true;
             }
-        }
         false
     }
 
@@ -153,7 +152,7 @@ impl<'a> Lexer<'a> {
             '/' => {
                 if self.match_char('/') {
                     self.skip_comment_line();
-                    return self.next_token();
+                    self.next_token()
                 } else if self.match_char('=') {
                     self.make_token(TokenKind::SlashAssign)
                 } else {

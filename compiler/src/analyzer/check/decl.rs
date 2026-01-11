@@ -96,15 +96,14 @@ impl<'a> Analyzer<'a> {
         }
 
         // 应用推导结果
-        if !updates.is_empty() {
-            if let Some(info) = self.tables.get_mut(&table_id) {
+        if !updates.is_empty()
+            && let Some(info) = self.tables.get_mut(&table_id) {
                 for (name, new_ty) in updates {
                     if let Some(field_info) = info.fields.get_mut(&name) {
                         field_info.ty = new_ty;
                     }
                 }
             }
-        }
     }
 
     // [New] 检查顶层变量定义 (例如: count: int = 10)
@@ -134,20 +133,18 @@ impl<'a> Analyzer<'a> {
                     }
                 }
                 // Case B: 变量有显式标注 (count: int = "hello")
-                else {
-                    if !global_info.ty.is_assignable_from(&expr_ty) {
-                        let expected_str = global_info.ty.display(&self.ctx).to_string();
-                        let got_str = expr_ty.display(&self.ctx).to_string();
+                else if !global_info.ty.is_assignable_from(&expr_ty) {
+                    let expected_str = global_info.ty.display(self.ctx).to_string();
+                    let got_str = expr_ty.display(self.ctx).to_string();
 
-                        self.report(
-                            def.span,
-                            SemanticErrorKind::FieldTypeMismatch {
-                                field: self.ctx.resolve_symbol(def.name).to_string(),
-                                expected: expected_str,
-                                found: got_str,
-                            },
-                        );
-                    }
+                    self.report(
+                        def.span,
+                        SemanticErrorKind::FieldTypeMismatch {
+                            field: self.ctx.resolve_symbol(def.name).to_string(),
+                            expected: expected_str,
+                            found: got_str,
+                        },
+                    );
                 }
             }
         }
@@ -181,15 +178,13 @@ impl<'a> Analyzer<'a> {
         // 1. 构建泛型替换映射
         let mut type_mapping = HashMap::new();
 
-        if let Some(parent_ref_ty) = &child.parent {
-            if let Type::GenericInstance { args, .. } = parent_ref_ty {
-                if args.len() == parent.generic_params.len() {
+        if let Some(parent_ref_ty) = &child.parent
+            && let Type::GenericInstance { args, .. } = parent_ref_ty
+                && args.len() == parent.generic_params.len() {
                     for (i, param_sym) in parent.generic_params.iter().enumerate() {
                         type_mapping.insert(*param_sym, args[i].clone());
                     }
                 }
-            }
-        }
 
         // 2. 检查字段覆盖兼容性
         // 注意：child_info 现在是 FieldInfo，包含 .ty 和 .span
@@ -203,8 +198,8 @@ impl<'a> Analyzer<'a> {
                 // 这里我们使用 is_assignable_from，意味着允许协变 (Parent = Child 是合法的)
                 if !expected_ty.is_assignable_from(&child_info.ty) {
                     let f_name = self.ctx.resolve_symbol(*name).to_string();
-                    let child_ty_str = child_info.ty.display(&self.ctx).to_string();
-                    let parent_ty_str = expected_ty.display(&self.ctx).to_string();
+                    let child_ty_str = child_info.ty.display(self.ctx).to_string();
+                    let parent_ty_str = expected_ty.display(self.ctx).to_string();
                     let parent_name = self.ctx.resolve_symbol(parent.name).to_string();
 
                     self.report(
@@ -259,8 +254,8 @@ impl<'a> Analyzer<'a> {
 
                     if !c_p_ty.is_assignable_from(e_p_ty) {
                         let m_name = self.ctx.resolve_symbol(*name).to_string();
-                        let c_str = c_p_ty.display(&self.ctx).to_string();
-                        let e_str = e_p_ty.display(&self.ctx).to_string();
+                        let c_str = c_p_ty.display(self.ctx).to_string();
+                        let e_str = e_p_ty.display(self.ctx).to_string();
 
                         self.report(
                             child_info.span, // [Fix] 使用方法自己的 Span
@@ -281,8 +276,8 @@ impl<'a> Analyzer<'a> {
                 // ParentRet.is_assignable_from(ChildRet) => True
                 if !expected_ret.is_assignable_from(&child_info.signature.ret) {
                     let m_name = self.ctx.resolve_symbol(*name).to_string();
-                    let c_str = child_info.signature.ret.display(&self.ctx).to_string();
-                    let e_str = expected_ret.display(&self.ctx).to_string();
+                    let c_str = child_info.signature.ret.display(self.ctx).to_string();
+                    let e_str = expected_ret.display(self.ctx).to_string();
 
                     self.report(
                         child_info.span, // [Fix] 使用方法自己的 Span

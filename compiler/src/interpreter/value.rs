@@ -1,6 +1,6 @@
 use super::errors::RuntimeErrorKind;
 use crate::analyzer::TableId;
-use crate::ast::{Block, MethodDefinition};
+use crate::ast::MethodDefinition;
 use crate::context::Context;
 use crate::interpreter::Environment;
 use crate::source::FileId; // [New] 引入 FileId
@@ -114,7 +114,7 @@ impl Value {
                 format!("<module #{:?}>", file_id)
             }
 
-            Value::Function(file_id, name, ..) => {
+            Value::Function(_file_id, name, ..) => {
                 let func_name = interner.resolve(*name);
                 format!("<fn {}>", func_name)
             }
@@ -127,12 +127,12 @@ impl Value {
                 format!("<bound method {}.{}>", class_name, method_name)
             }
 
-            Value::BoundNativeMethod(receiver, _) => {
+            Value::BoundNativeMethod(_receiver, _) => {
                 // 递归调用 receiver 的 to_string 有死循环风险，简单处理
-                format!("<bound native method>")
+                "<bound native method>".to_string()
             }
 
-            Value::Range(start, end) => format!("{}..{}", start.to_string(), end.to_string()),
+            Value::Range(start, end) => format!("{}..{}", start, end),
         }
     }
 }
@@ -148,7 +148,7 @@ impl fmt::Display for Value {
             Value::Float(n) => write!(f, "{}", n),
             Value::Str(s) => write!(f, "{}", s),
             Value::Array(_) => write!(f, "[...]"),
-            Value::Instance(inst) => write!(f, "<instance>"), // 简略
+            Value::Instance(_inst) => write!(f, "<instance>"), // 简略
             Value::Table(_) => write!(f, "<class>"),
             Value::Module(..) => write!(f, "<module>"),
             Value::Range(start, end) => write!(f, "{}..{}", start, end),

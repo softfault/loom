@@ -111,8 +111,8 @@ impl<'a> Analyzer<'a> {
                 let var_name = self.ctx.resolve_symbol(sym).to_string();
 
                 // 这里需要用到 ctx，Analyzer 持有 ctx 的 mut 引用，所以这一步也是没问题的
-                let var_ty_str = var_ty.display(&self.ctx).to_string();
-                let rhs_ty_str = rhs_ty.display(&self.ctx).to_string();
+                let var_ty_str = var_ty.display(self.ctx).to_string();
+                let rhs_ty_str = rhs_ty.display(self.ctx).to_string();
 
                 self.report(
                     rhs_span,
