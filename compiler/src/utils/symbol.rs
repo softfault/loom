@@ -31,6 +31,6 @@ impl Interner {
     }
 
     pub fn resolve(&self, sym: Symbol) -> &str {
-        &self.vec[sym.0 as usize]
+        &self.vec[sym.0]
     }
 }

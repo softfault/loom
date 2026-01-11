@@ -1,5 +1,3 @@
-use core::fmt;
-use core::ops::Add;
 use core::ops::Range;
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

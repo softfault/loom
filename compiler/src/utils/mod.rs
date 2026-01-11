@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 mod node;
 mod span;
 mod symbol;
