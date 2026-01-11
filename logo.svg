@@ -1,5 +1,6 @@
-<svg width="200" height="200" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-  <path d="M15 15 L45 15 L45 55 L15 85 Z" fill="#1e293b" />
-  
-  <path d="M15 85 L45 55 L85 55 L85 85 Z" fill="#334155" />
+<svg width="128" height="128" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <g transform="translate(-7.5, 2.5)">
+    <path d="M30 15 L50 15 L50 60 L30 80 Z" fill="#1e293b" />
+    <path d="M30 80 L50 60 L85 60 L85 80 Z" fill="#64748b" />
+  </g>
 </svg>
