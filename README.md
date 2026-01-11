@@ -1,10 +1,29 @@
-# Loom
+<div align="center">
+  <img src="logo.svg" width="120" alt="Loom Logo" />
+  <h1>Loom</h1>
+  <p>
+    <strong>A general-purpose, statically typed programming language.</strong>
+  </p>
+  <p>
+    Structure of Rust · Fluidity of Python · Modular by Design
+  </p>
+</div>
 
-> A statically typed, modular, object-oriented scripting language written in Rust.
+---
 
-**Loom** is a programming language that blends the flexibility of scripting languages with the safety of static typing. Inspired by **Rust** and **Python**, it features a clean, block-based syntax (indentation-sensitive) but captures errors at compile-time (Analyzer phase) through a robust type-checking system.
+> **Design Goal:** To engineer the gap between high-level prototyping and low-level system programming.
 
-Its design goal is to provide a modern scripting experience: **Write with the fluidity of a script, run with the confidence of Rust.**
+**Loom** is a strictly typed, object-oriented language built for reliability and scale. Inspired by the robustness of **Rust** and the readability of **Python**, it features a clean, indentation-sensitive syntax but enforces correctness at compile-time through a rigorous Analyzer and Type System.
+
+Currently powered by a memory-safe interpreter written in Rust, Loom is evolving towards a fully compiled system language capable of self-hosting and low-level development.
+
+## What is Loom?
+
+* **Statically Typed**: No implicit type guessing. Errors are caught during the Analysis phase, not in production.
+* **Modular**: Enforces a strict, modern module system ("Rust 2018+" style) for scalable project architecture.
+* **System-Oriented Vision**: While currently interpreted, Loom's semantics (RTTI, strict scoping, explicit types) are designed with a future AOT compiler and OS development in mind.
+
+**Philosophy**: *Write with the fluidity of a script, run with the confidence of a system language.*
 
 ## What's New in v0.0.4
 
@@ -22,13 +41,13 @@ Its design goal is to provide a modern scripting experience: **Write with the fl
 
 
 * **Strong Type System**:
-* Basic types: `int`, `float`, `bool`, `str`, `char`, `void`, `any`.
+* Basic types: `int`, `float`, `bool`, `str`, `char`, `any`.
 * **Strict Typing**: Explicit type annotations required for fields and function signatures.
 * **RTTI**: Runtime Type Information supporting safe downcasting (`as` operator).
 
 
 * **Object-Oriented**:
-* Class definitions (`class Name { ... }`).
+* Class definitions (`class Name`).
 * Single inheritance.
 * Method overriding and Dynamic Dispatch.
 
