@@ -58,8 +58,8 @@ impl<'a> Parser<'a> {
             }
             self.expect(TokenKind::Dedent)?;
         } else {
-             // 允许空类吗？如果不允许，报错；如果允许 (e.g. `class A`), 也可以不报错
-             // 这里为了严谨建议要求 Body，或者允许直接换行结束
+            // 允许空类吗？如果不允许，报错；如果允许 (e.g. `class A`), 也可以不报错
+            // 这里为了严谨建议要求 Body，或者允许直接换行结束
         }
 
         let end_span = self.previous_span();
@@ -108,10 +108,10 @@ impl<'a> Parser<'a> {
         if !self.check(TokenKind::Dedent) && !self.is_at_end() {
             self.expect(TokenKind::Newline)?;
         }
-        
+
         // 检查: 字段至少需要类型或值
         if type_annotation.is_none() && value.is_none() {
-             return Err(ParseError {
+            return Err(ParseError {
                 expected: ": Type or = Value".into(),
                 found: self.peek().kind,
                 span: start_span,
@@ -121,7 +121,11 @@ impl<'a> Parser<'a> {
 
         let end_span = self.previous_span();
         Ok(TableItem::Field(self.make_node(
-            FieldDefinitionData { name, type_annotation, value },
+            FieldDefinitionData {
+                name,
+                type_annotation,
+                value,
+            },
             start_span.to(end_span),
         )))
     }
@@ -131,7 +135,7 @@ impl<'a> Parser<'a> {
     // 语法: fn add(a: int) int
     //          return a + b
     // ==========================================
-    
+
     // 公共入口：顶层调用
     pub fn parse_function_definition(&mut self) -> ParseResult<TopLevelItem> {
         let func = self.parse_function_definition_internal(false)?;
@@ -139,7 +143,10 @@ impl<'a> Parser<'a> {
     }
 
     // 内部实现：供 TopLevel 和 ClassMethod 复用
-    fn parse_function_definition_internal(&mut self, is_method: bool) -> ParseResult<MethodDefinition> {
+    fn parse_function_definition_internal(
+        &mut self,
+        is_method: bool,
+    ) -> ParseResult<MethodDefinition> {
         let start_span = self.expect(TokenKind::Fn)?.span;
 
         // Name
@@ -162,19 +169,20 @@ impl<'a> Parser<'a> {
         let return_type = if !self.check(TokenKind::Newline)
             && !self.check(TokenKind::Indent)
             && !self.check(TokenKind::FatArrow) // 兼容箭头?
-            && !self.check(TokenKind::Equal) 
-            && !self.check(TokenKind::LeftBrace) {
+            && !self.check(TokenKind::Equal)
+            && !self.check(TokenKind::LeftBrace)
+        {
             Some(self.parse_type()?)
         } else {
             None
         };
 
         // Body
-        // 支持: 
+        // 支持:
         // 1. => expr (单行)
         // 2. Indent Block (多行)
         // 3. = expr (兼容老语法?) -> 建议 fn 语法下仅支持 => 或 Block
-        
+
         let mut body = None;
         let mut end_span = self.previous_span();
 
@@ -186,7 +194,12 @@ impl<'a> Parser<'a> {
         if self.match_token(&[TokenKind::FatArrow]) {
             let expr = self.parse_expression()?;
             end_span = expr.span;
-            body = Some(self.make_node(BlockData { statements: vec![expr] }, end_span));
+            body = Some(self.make_node(
+                BlockData {
+                    statements: vec![expr],
+                },
+                end_span,
+            ));
         } else if self.check(TokenKind::Indent) {
             let block = self.parse_block()?;
             end_span = block.span;
