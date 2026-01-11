@@ -1,7 +1,6 @@
 use crate::analyzer::TableId;
 use crate::analyzer::errors::SemanticErrorKind;
 use crate::analyzer::{Analyzer, FunctionSignature, Type};
-use crate::utils::Symbol;
 use std::collections::{HashMap, HashSet};
 
 impl<'a> Analyzer<'a> {

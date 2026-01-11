@@ -18,7 +18,6 @@ use super::value::{Instance, Value};
 use super::{EvalResult, Interpreter};
 use crate::analyzer::TableId;
 use crate::ast::*;
-use crate::source::FileId;
 use crate::utils::Symbol;
 use std::cell::RefCell;
 use std::rc::Rc;
