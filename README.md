@@ -79,7 +79,7 @@ git clone https://github.com/softfault/loom.git
 cd loom
 
 # Run the example script
-cargo run hello.lm
+cargo run example/hello.lm
 
 ```
 

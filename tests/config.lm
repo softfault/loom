@@ -1,7 +1,0 @@
-# tests/config.lm
-secret_code = 12345
-
-[get_secret() int]
-    # 这个函数应该永远返回 config.lm 里的 12345
-    # 即使调用者那里也有一个 secret_code
-    return secret_code
