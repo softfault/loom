@@ -91,6 +91,8 @@ define_tokens! {
         // --- 核心关键字 ---
         "self"    => SmallSelf,  // 实例访问：self.host
         "Self"    => BigSelf,    // 约束/类型引用：[T: Self]
+        "class"   => Class,      // 替代原有的 [ClassName]
+        "fn"      => Fn,
 
         // --- 控制流 ---
         "if"       => If,

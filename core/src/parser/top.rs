@@ -4,138 +4,213 @@ use crate::token::TokenKind;
 use crate::utils::{Span, Symbol};
 
 impl<'a> Parser<'a> {
-    // [Refactor] 重命名并修改返回值
-    // 原来的 parse_table_definition 改为这个
-    /// 解析顶层定义 (Table 或 Top-level Function)
-    /// Case 1 Table:    [Name<T>: Proto]
-    /// Case 2 Function: [Name<T>(arg: T) Ret]
-    pub fn parse_definition(&mut self) -> ParseResult<TopLevelItem> {
-        let start_span = self.peek().span;
+    // ==========================================
+    // Case 1: Class Definition
+    // 语法:
+    // class Dog<T> : Animal
+    //     field: int
+    //     fn method() ...
+    // ==========================================
+    pub fn parse_class_definition(&mut self) -> ParseResult<TopLevelItem> {
+        let start_span = self.expect(TokenKind::Class)?.span; // 消耗 'class'
 
-        // 1. 公共头部: [Name<G>
-        self.expect(TokenKind::LeftBracket)?;
+        // 1. Name
         let name_token = self.expect(TokenKind::Identifier)?;
         let name = self.intern_token(name_token);
 
+        // 2. Generics <T>
         let generics = if self.check(TokenKind::LessThan) {
             self.parse_generic_params()?
         } else {
             Vec::new()
         };
 
-        // 2. 分支判断
-        // 如果下一个是 '('，说明是顶层函数 [func(...)]
-        // 如果下一个是 ':' 或 ']'，说明是 Table [Class]
-        if self.check(TokenKind::LeftParen) {
-            // === Case Function ===
-            // 调用 parse_method_definition 的核心逻辑
-            // 注意：parse_method_definition 负责解析 (args) Ret ...
-            // 但顶层函数的 Body 在 Header 之外（即 ] 之后），所以我们需要手动组合
-
-            // 2.1 解析参数和返回值
-            let params = self.parse_param_list()?;
-
-            // 2.2 解析返回值 (在 ']' 之前)
-            let return_type = if !self.check(TokenKind::RightBracket) {
-                Some(self.parse_type()?)
-            } else {
-                None
-            };
-
-            // 2.3 结束 Header
-            self.expect(TokenKind::RightBracket)?;
-
-            // 2.4 解析 Body
-            // 顶层函数的 Body 就像 Table 下面的 Item 一样，通常是缩进块
-            // 但按照你的语法：
-            // [add(a, b) int]
-            //     return a+b
-            // 这里我们需要解析一个 Block
-
-            // 允许 Header 后换行
-            if self.check(TokenKind::Newline) {
-                self.advance();
-            }
-
-            let body = if self.check(TokenKind::Indent) {
-                Some(self.parse_block()?)
-            } else {
-                // 如果是单行模式 [func] => expr 也可以支持，或者暂时只支持 Block
-                // 这里假设必须有实现
-                return Err(ParseError {
-                    expected: "Indented Block".into(),
-                    found: self.peek().kind,
-                    span: self.peek().span,
-                    message: "Top-level function must have a body".into(),
-                });
-            };
-
-            let end_span = body.as_ref().map(|b| b.span).unwrap_or(start_span);
-
-            let func_def = self.make_node(
-                MethodDefinitionData {
-                    name,
-                    generics,
-                    params,
-                    return_type,
-                    body,
-                },
-                start_span.to(end_span),
-            );
-
-            Ok(TopLevelItem::Function(func_def))
+        // 3. Inheritance (: Parent)
+        let prototype = if self.match_token(&[TokenKind::Colon]) {
+            Some(self.parse_type()?)
         } else {
-            // === Case Table ===
-            // 2.1 可选的原型 : Proto
-            let prototype = if self.match_token(&[TokenKind::Colon]) {
-                Some(self.parse_type()?)
-            } else {
-                None
-            };
+            None
+        };
 
-            self.expect(TokenKind::RightBracket)?;
+        // 4. Body
+        // 允许头部后换行
+        if self.check(TokenKind::Newline) {
+            self.advance();
+        }
 
-            // Header 后允许换行
-            if self.check(TokenKind::Newline) {
-                self.advance();
-            }
+        // 必须进入缩进块 (或者由上层保证，但通常这里检查比较好)
+        // 注意：如果类是空的，可能直接接 EOF 或下一个 definition，这取决于是否强制要求 Body
+        // 这里假设类定义必须有缩进块
+        let mut items = Vec::new();
 
-            // 2.2 解析 Body (Items)
-            let mut items = Vec::new();
-
+        if self.match_token(&[TokenKind::Indent]) {
             loop {
+                // 跳过空行
                 while self.match_token(&[TokenKind::Newline]) {}
 
-                if self.is_at_end() || self.check(TokenKind::LeftBracket) {
+                if self.check(TokenKind::Dedent) || self.is_at_end() {
                     break;
                 }
 
-                if !self.check(TokenKind::Identifier) {
-                    let token = self.peek();
-                    return Err(ParseError {
-                        expected: "Field or Method Name".into(),
-                        found: token.kind,
-                        span: token.span,
-                        message: "Expected a definition inside the table".into(),
-                    });
-                }
-
-                let item = self.parse_table_item()?;
+                // 在 Class 内部，可能是 field 定义，也可能是 fn 方法
+                let item = self.parse_class_member()?;
                 items.push(item);
             }
-
-            let end_span = self.previous_span();
-
-            Ok(TopLevelItem::Table(self.make_node(
-                TableDefinitionData {
-                    name,
-                    prototype,
-                    generics,
-                    items,
-                },
-                start_span.to(end_span),
-            )))
+            self.expect(TokenKind::Dedent)?;
+        } else {
+             // 允许空类吗？如果不允许，报错；如果允许 (e.g. `class A`), 也可以不报错
+             // 这里为了严谨建议要求 Body，或者允许直接换行结束
         }
+
+        let end_span = self.previous_span();
+
+        Ok(TopLevelItem::Table(self.make_node(
+            TableDefinitionData {
+                name,
+                prototype,
+                generics,
+                items,
+            },
+            start_span.to(end_span),
+        )))
+    }
+
+    /// 解析类成员 (Field 或 Method)
+    fn parse_class_member(&mut self) -> ParseResult<TableItem> {
+        // Case A: 方法 (fn method_name ...)
+        if self.check(TokenKind::Fn) {
+            let method = self.parse_function_definition_internal(true)?; // true = implies method
+            return Ok(TableItem::Method(method));
+        }
+
+        // Case B: 字段 (name: Type = val)
+        // 必须以 Identifier 开头
+        let name_token = self.expect(TokenKind::Identifier)?;
+        let name = self.intern_token(name_token);
+        let start_span = name_token.span;
+
+        // 字段必须有类型标注 (Loom 强类型)
+        let type_annotation = if self.match_token(&[TokenKind::Colon]) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        // 可选赋值
+        let value = if self.match_token(&[TokenKind::Assign]) {
+            let expr = self.parse_expression()?;
+            Some(expr)
+        } else {
+            None
+        };
+
+        // 必须以 Newline 结束 (除非 EOF 或 Dedent)
+        if !self.check(TokenKind::Dedent) && !self.is_at_end() {
+            self.expect(TokenKind::Newline)?;
+        }
+        
+        // 检查: 字段至少需要类型或值
+        if type_annotation.is_none() && value.is_none() {
+             return Err(ParseError {
+                expected: ": Type or = Value".into(),
+                found: self.peek().kind,
+                span: start_span,
+                message: "Field declaration requires a type or value".into(),
+            });
+        }
+
+        let end_span = self.previous_span();
+        Ok(TableItem::Field(self.make_node(
+            FieldDefinitionData { name, type_annotation, value },
+            start_span.to(end_span),
+        )))
+    }
+
+    // ==========================================
+    // Case 2: Function Definition
+    // 语法: fn add(a: int) int
+    //          return a + b
+    // ==========================================
+    
+    // 公共入口：顶层调用
+    pub fn parse_function_definition(&mut self) -> ParseResult<TopLevelItem> {
+        let func = self.parse_function_definition_internal(false)?;
+        Ok(TopLevelItem::Function(func))
+    }
+
+    // 内部实现：供 TopLevel 和 ClassMethod 复用
+    fn parse_function_definition_internal(&mut self, is_method: bool) -> ParseResult<MethodDefinition> {
+        let start_span = self.expect(TokenKind::Fn)?.span;
+
+        // Name
+        let name_token = self.expect(TokenKind::Identifier)?;
+        let name = self.intern_token(name_token);
+
+        // Generics <T>
+        let generics = if self.check(TokenKind::LessThan) {
+            self.parse_generic_params()?
+        } else {
+            Vec::new()
+        };
+
+        // Params (a: int, b: str)
+        let params = self.parse_param_list()?;
+
+        // Return Type (可选)
+        // 逻辑：如果在 Newline/Indent/BlockStart 之前有东西，那就是返回类型
+        // 你的 check 逻辑很棒，复用那个
+        let return_type = if !self.check(TokenKind::Newline)
+            && !self.check(TokenKind::Indent)
+            && !self.check(TokenKind::FatArrow) // 兼容箭头?
+            && !self.check(TokenKind::Equal) 
+            && !self.check(TokenKind::LeftBrace) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        // Body
+        // 支持: 
+        // 1. => expr (单行)
+        // 2. Indent Block (多行)
+        // 3. = expr (兼容老语法?) -> 建议 fn 语法下仅支持 => 或 Block
+        
+        let mut body = None;
+        let mut end_span = self.previous_span();
+
+        // 允许 Header 后换行 (比如 fn foo()\n Indent)
+        if self.match_token(&[TokenKind::Newline]) {
+            // just consume
+        }
+
+        if self.match_token(&[TokenKind::FatArrow]) {
+            let expr = self.parse_expression()?;
+            end_span = expr.span;
+            body = Some(self.make_node(BlockData { statements: vec![expr] }, end_span));
+        } else if self.check(TokenKind::Indent) {
+            let block = self.parse_block()?;
+            end_span = block.span;
+            body = Some(block);
+        } else {
+            // 如果既没有 => 也没有 Indent，对于 fn 来说是语法错误 (除非是 trait 定义，目前 Loom 没有 interface 关键字)
+            return Err(ParseError {
+                expected: "Function Body (Indent or =>)".into(),
+                found: self.peek().kind,
+                span: self.peek().span,
+                message: "Function must have a body".into(),
+            });
+        }
+
+        Ok(self.make_node(
+            MethodDefinitionData {
+                name,
+                generics,
+                params,
+                return_type,
+                body,
+            },
+            start_span.to(end_span),
+        ))
     }
 
     /// 解析泛型参数列表 <T: Base, U>
@@ -171,88 +246,6 @@ impl<'a> Parser<'a> {
 
         self.expect(TokenKind::GreaterThan)?;
         Ok(params)
-    }
-
-    /// 解析 Table 内部条目 (字段 或 方法)
-    fn parse_table_item(&mut self) -> ParseResult<TableItem> {
-        // 1. 解析名字 (Identifier)
-        let name_token = self.expect(TokenKind::Identifier)?;
-        let name = self.intern_token(name_token);
-        let start_span = name_token.span;
-
-        // 2. 解析可选的类型标注 (: Type)
-        let type_annotation = if self.match_token(&[TokenKind::Colon]) {
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
-
-        // [Modified] 检查赋值与泛型
-        if self.match_token(&[TokenKind::Assign]) {
-            // Case 1: 泛型方法 map = <U>(...)
-            // 检查下一个是否是 '<'
-            if self.check(TokenKind::LessThan) {
-                let generics = self.parse_generic_params()?;
-                // 泛型解析完后，必须紧跟 '('
-                let method = self.parse_method_definition(name, start_span, generics)?;
-                return Ok(TableItem::Method(method));
-            }
-
-            // Case 2: 普通方法 map = (args)...
-            // 检查下一个是否是 '(' 且像参数列表
-            let is_method_start = self.check(TokenKind::LeftParen) && self.looks_like_param_list();
-
-            if is_method_start {
-                let method = self.parse_method_definition(name, start_span, Vec::new())?;
-                Ok(TableItem::Method(method))
-            } else {
-                // Case 3: 字段赋值 field = expr
-                let expr = self.parse_expression()?;
-                self.match_token(&[TokenKind::Newline]);
-                let end_span = expr.span;
-                Ok(TableItem::Field(self.make_node(
-                    FieldDefinitionData {
-                        name,
-                        type_annotation,
-                        value: Some(expr),
-                    },
-                    start_span.to(end_span),
-                )))
-            }
-        } else {
-            // === 分支 B: 没有等号 (仅声明) ===
-            // 语法: val: T
-            // 这种情况下，后面必须紧跟换行符、EOF 或 '}' (如果 Table 用花括号的话)
-            // Loom 用缩进/换行分隔，所以这里检查换行
-
-            if self.check(TokenKind::Newline)
-                || self.is_at_end()
-                || self.check(TokenKind::RightBracket)
-            {
-                // 吃掉换行 (如果是 EOF 或 ] 则不吃，留给上层处理)
-                self.match_token(&[TokenKind::Newline]);
-
-                Ok(TableItem::Field(self.make_node(
-                    FieldDefinitionData {
-                        name,
-                        type_annotation,
-                        value: None, // 无值
-                    },
-                    start_span, // Span 只有名字和类型那么长
-                )))
-            } else {
-                // 既没有等号，也不是合法的结尾，报错
-                let found = self.peek();
-                Err(crate::parser::ParseError {
-                    expected: "'=' or Newline".to_string(),
-                    found: found.kind,
-                    span: found.span,
-                    message:
-                        "Field declaration must allow initialization ('=') or end with a newline"
-                            .to_string(),
-                })
-            }
-        }
     }
 
     /// 解析方法定义 (已经消耗了 name 和 =)

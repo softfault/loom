@@ -86,12 +86,6 @@ impl<'a> Lexer<'a> {
             return self.handle_newline();
         }
 
-        if c == '#' {
-            self.skip_comment_line();
-            // 注释也是一种“空白”，跳过它是为了读取下一行的缩进
-            return self.next_token();
-        }
-
         // 正常 Token 解析
         self.advance(); // 消耗当前字符
 
@@ -157,7 +151,10 @@ impl<'a> Lexer<'a> {
 
             // Slash (/)
             '/' => {
-                if self.match_char('=') {
+                if self.match_char('/') {
+                    self.skip_comment_line();
+                    return self.next_token();
+                } else if self.match_char('=') {
                     self.make_token(TokenKind::SlashAssign)
                 } else {
                     self.make_token(TokenKind::Slash)
@@ -305,9 +302,6 @@ impl<'a> Lexer<'a> {
     }
 
     fn skip_comment_line(&mut self) {
-        // 假设注释是 //
-        self.advance(); // /
-        self.advance(); // /
         while let Some(&c) = self.chars.peek() {
             if c == '\n' {
                 break;
@@ -315,8 +309,6 @@ impl<'a> Lexer<'a> {
             self.advance();
         }
     }
-
-    // --- 以下保持大部分原有逻辑，微调 ---
 
     fn scan_identifier(&mut self) -> Token {
         let start = self.start_position; // 修正：使用 start_position

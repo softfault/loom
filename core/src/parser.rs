@@ -167,23 +167,15 @@ impl<'a> Parser<'a> {
     }
 
     /// Loom 的 Synchronize 逻辑
-    /// Loom 依赖 TOML Section `[...]` 或新的缩进来划分大块。
     pub fn synchronize(&mut self) {
         self.advance();
 
         while !self.is_at_end() {
-            // 1. 如果遇到 Newline，可能是个好机会，但 Loom 里 Newline 太常见
-            // 2. 最好的同步点是 `[` (新的 Table 定义开始)
-            if self.check(TokenKind::LeftBracket) {
-                return;
+            // 遇到这些关键字，说明可能是一个新定义的开始，可以在这里恢复解析
+            match self.peek().kind {
+                TokenKind::Class | TokenKind::Fn | TokenKind::Use => return,
+                _ => {}
             }
-
-            // 3. 遇到 use (import) 也是同步点
-            if self.check(TokenKind::Use) {
-                return;
-            }
-
-            // 4. 如果缩进完全回到 0，通常也是安全的同步点 (这个需要 Lexer 支持检测，这里很难拿到)
 
             self.advance();
         }
@@ -258,13 +250,15 @@ impl<'a> Parser<'a> {
             if self.check(TokenKind::Use) {
                 let use_stmt = self.parse_use_statement()?;
                 definitions.push(TopLevelItem::Use(use_stmt));
-            } else if self.check(TokenKind::LeftBracket) {
-                // 处理 [Class] 或 [Func]
-                let item = self.parse_definition()?;
+            } else if self.check(TokenKind::Class) {
+                // 处理类定义: class Dog ...
+                let item = self.parse_class_definition()?;
+                definitions.push(item);
+            } else if self.check(TokenKind::Fn) {
+                // 处理顶层函数: fn main() ...
+                let item = self.parse_function_definition()?;
                 definitions.push(item);
             } else if self.check(TokenKind::Identifier) {
-                // [New] Phase 2: 处理顶层变量
-                // 只要是 Identifier 开头，在顶层就认为是字段定义
                 let field = self.parse_top_level_field()?;
                 definitions.push(TopLevelItem::Field(field));
             } else {

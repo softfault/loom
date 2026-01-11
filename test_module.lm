@@ -1,6 +1,6 @@
 use .math_lib as math
 
-[main()]
+fn main()
     print("PI from lib:" + math.PI)
     
     sum = math.add(10, 20)
