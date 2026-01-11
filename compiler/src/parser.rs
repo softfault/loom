@@ -9,7 +9,7 @@ use crate::context::Context;
 use crate::lexer::Lexer;
 use crate::source::FileId;
 use crate::token::{Token, TokenKind};
-use crate::utils::{Interner, Span, Symbol};
+use crate::utils::{Interner, Node, NodeId, Span, Symbol};
 
 #[derive(Debug, Clone)]
 pub struct ParseError {

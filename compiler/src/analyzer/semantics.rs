@@ -1,6 +1,5 @@
 use super::types::Type;
-use crate::ast::NodeId;
-use crate::utils::{Span, Symbol};
+use crate::utils::{NodeId, Span, Symbol};
 use std::collections::HashMap;
 
 /// 语义数据库：存储 Analyzer 分析出的所有信息

@@ -1,4 +1,3 @@
-#![allow(unused)]
 use crate::utils::Span;
 use core::ops::Deref;
 

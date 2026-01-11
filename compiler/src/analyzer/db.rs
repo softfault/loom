@@ -1,9 +1,8 @@
 // crate::context.rs 或 crate::analyzer::db.rs
 
 use super::types::Type;
-use crate::ast::NodeId;
 use crate::source::FileId;
-use crate::utils::Span;
+use crate::utils::{NodeId, Span};
 use std::collections::HashMap;
 
 /// 语义数据库：Analyzer 的"副产品"，LSP 的"核心资产"

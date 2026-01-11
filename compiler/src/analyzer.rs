@@ -19,10 +19,10 @@ pub use tableid::TableId;
 pub use types::{FunctionSignature, Type};
 
 use crate::analyzer::info::{FunctionInfo, GlobalVarInfo, SymbolKind};
-use crate::ast::{NodeId, Program};
+use crate::ast::Program;
 use crate::context::Context;
 use crate::source::FileId;
-use crate::utils::{Span, Symbol};
+use crate::utils::{NodeId, Span, Symbol};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
