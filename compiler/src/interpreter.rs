@@ -13,6 +13,7 @@ use crate::context::Context;
 use crate::source::FileId;
 use crate::utils::Symbol;
 use environment::Environment;
+
 // [New] 引入具体的错误类型
 use errors::RuntimeErrorKind;
 use std::cell::RefCell;
@@ -84,7 +85,7 @@ impl<'a> Interpreter<'a> {
         let builtins = Rc::new(RefCell::new(Environment::new()));
         builtins.borrow_mut().define(
             ctx.intern("print"),
-            Value::NativeFunction(crate::interpreter::native::native_print),
+            Value::NativeFunction(value::NativeFunc::new("print", native::native_print)),
         );
         // 这里还可以 define("int", Value::Table(primitive_int)) 等
 
@@ -379,7 +380,7 @@ impl<'a> Interpreter<'a> {
     ) -> EvalResult {
         match func {
             // 1. 原生函数调用 (print)
-            Value::NativeFunction(f) => match f(self.ctx, args) {
+            Value::NativeFunction(f) => match f.call(self.ctx, args) {
                 Ok(v) => EvalResult::Ok(v),
                 // [Fix] 错误传播
                 Err(e) => EvalResult::Err(e),
@@ -390,7 +391,9 @@ impl<'a> Interpreter<'a> {
                 let func_def = match self.function_definitions.get(&(file_id, func_name)) {
                     Some(def) => def.clone(),
                     None => {
-                        return EvalResult::Err(RuntimeErrorKind::Internal("Function AST not found".to_string()));
+                        return EvalResult::Err(RuntimeErrorKind::Internal(
+                            "Function AST not found".to_string(),
+                        ));
                     }
                 };
 
@@ -469,9 +472,10 @@ impl<'a> Interpreter<'a> {
                 // 同上，去模块环境找 base
                 let file_id = table_id.file_id();
                 if let Some(Value::Module(_, env)) = self.module_cache.get(&file_id)
-                    && let Some(Value::Table(parent_id)) = env.borrow().get(*base) {
-                        return Some(parent_id);
-                    }
+                    && let Some(Value::Table(parent_id)) = env.borrow().get(*base)
+                {
+                    return Some(parent_id);
+                }
                 None
             }
 

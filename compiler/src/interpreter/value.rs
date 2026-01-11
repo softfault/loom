@@ -40,18 +40,58 @@ pub enum Value {
     // === 可调用对象 ===
     Function(FileId, Symbol, Rc<RefCell<Environment>>),
 
-    NativeFunction(NativeFuncPtr),
+    NativeFunction(NativeFunc),
 
     // [修改] 绑定方法
     // 同样，Instance 内部已经包含了 TableId
     BoundMethod(Rc<Instance>, MethodDefinition, Rc<RefCell<Environment>>),
 
-    BoundNativeMethod(Box<Value>, NativeFuncPtr),
+    BoundNativeMethod(Box<Value>, NativeFunc),
 
     Range(Box<Value>, Box<Value>),
 }
 
 pub type NativeFuncPtr = fn(&mut Context, &[Value]) -> Result<Value, RuntimeErrorKind>;
+
+// 1. 定义包装器
+#[derive(Clone)]
+pub struct NativeFunc {
+    name: String, // 或者用 Symbol，看你喜好。String 对原生函数调试更友好
+    func: NativeFuncPtr,
+}
+
+// 2. 关键点：自定义 PartialEq
+// 我们认为：只要名字一样，就是同一个原生函数。
+// 这样既避开了比较指针的 warning，又符合人类直觉。
+impl PartialEq for NativeFunc {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+// 3. 自定义 Debug
+// 打印出来是 <native fn print> 而不是 <native fn>，调试极其舒服
+impl fmt::Debug for NativeFunc {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<native fn {}>", self.name)
+    }
+}
+
+impl NativeFunc {
+    // 提供构造函数
+    pub fn new(name: &str, func: NativeFuncPtr) -> Self {
+        Self {
+            name: name.to_string(),
+            func,
+        }
+    }
+
+    // === 魔法在这里 ===
+    // 定义一个 call 方法转发调用
+    pub fn call(&self, ctx: &mut Context, args: &[Value]) -> Result<Value, RuntimeErrorKind> {
+        (self.func)(ctx, args)
+    }
+}
 
 // [修改] Table 实例结构
 #[derive(Debug, PartialEq)]

@@ -1,5 +1,8 @@
 use super::*;
 use crate::interpreter::errors::RuntimeErrorKind;
+use crate::interpreter::native::*;
+use crate::interpreter::value::NativeFunc;
+
 use crate::source::FileId;
 
 impl<'a> Interpreter<'a> {
@@ -67,14 +70,15 @@ impl<'a> Interpreter<'a> {
             // 2. 查找方法
             for item in &table_def.data.items {
                 if let TableItem::Method(method_def) = item
-                    && method_def.name == method_name {
-                        // 找到了！获取环境
-                        let file_id = current_table_id.file_id();
-                        if let Some(Value::Module(_, env)) = self.module_cache.get(&file_id) {
-                            return Some((method_def.clone(), env.clone()));
-                        }
-                        return None;
+                    && method_def.name == method_name
+                {
+                    // 找到了！获取环境
+                    let file_id = current_table_id.file_id();
+                    if let Some(Value::Module(_, env)) = self.module_cache.get(&file_id) {
+                        return Some((method_def.clone(), env.clone()));
                     }
+                    return None;
+                }
             }
 
             // 3. [New] 使用公共逻辑查找父类，继续循环
@@ -118,7 +122,7 @@ impl<'a> Interpreter<'a> {
             Value::Str(_) => match field_name {
                 "len" => EvalResult::Ok(Value::BoundNativeMethod(
                     Box::new(target_val),
-                    crate::interpreter::native::native_str_len,
+                    NativeFunc::new("len", native_str_len),
                 )),
                 _ => EvalResult::Err(RuntimeErrorKind::PropertyNotFound {
                     target_type: "String".into(),
@@ -129,11 +133,11 @@ impl<'a> Interpreter<'a> {
             Value::Array(_) => match field_name {
                 "len" => EvalResult::Ok(Value::BoundNativeMethod(
                     Box::new(target_val),
-                    crate::interpreter::native::native_array_len,
+                    NativeFunc::new("len", native_array_len),
                 )),
                 "push" => EvalResult::Ok(Value::BoundNativeMethod(
                     Box::new(target_val),
-                    crate::interpreter::native::native_array_push,
+                    NativeFunc::new("push", native_array_push),
                 )),
                 _ => EvalResult::Err(RuntimeErrorKind::PropertyNotFound {
                     target_type: "Array".into(),

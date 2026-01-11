@@ -135,7 +135,7 @@ impl<'a> Interpreter<'a> {
                 full_args.extend(arg_values);
 
                 // 这里的 f 返回 Result<Value, RuntimeErrorKind>
-                match f(self.ctx, &full_args) {
+                match f.call(self.ctx, &full_args) {
                     Ok(v) => EvalResult::Ok(v),
                     Err(e) => EvalResult::Err(e),
                 }
