@@ -2,7 +2,8 @@
   "name": "loom-support",
   "displayName": "Loom Language",
   "description": "Syntax highlighting for the Loom programming language",
-  "version": "0.0.5",
+  "icon": "assets/logo.png",
+  "version": "0.0.6",
   "license": "MIT",
   "publisher": "softfault",
   "repository": {
@@ -28,7 +29,11 @@
         "extensions": [
           ".lm"
         ],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./assets/logo.svg",
+          "dark": "./assets/logo.svg"
+        }
       }
     ],
     "grammars": [
