@@ -276,12 +276,9 @@ impl<'a> Interpreter<'a> {
     /// === 2. 实例化 Table ===
     fn instantiate_table(&mut self, def: &TableDefinition, file_id: FileId) -> EvalResult {
         let mut fields_map = HashMap::new();
-        let caller_env = self.environment.clone();
-
         let table_id = TableId(file_id, def.name);
 
         // --- Step 1: 准备阶段 (只读) ---
-        // 我们在这个代码块里获取数据并克隆，代码块结束后，借用就释放了
         let fields_to_init: Vec<(Symbol, Option<Expression>)> = {
             let file_path = match self.ctx.source_manager.get_file_path(file_id) {
                 Some(p) => p,
@@ -289,7 +286,6 @@ impl<'a> Interpreter<'a> {
                     return EvalResult::Err(RuntimeErrorKind::Internal("File path missing".into()));
                 }
             };
-
             let mod_info = match self.ctx.modules.get(file_path) {
                 Some(m) => m,
                 None => {
@@ -298,16 +294,12 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
             };
-
             let table_info = match mod_info.tables.get(&table_id) {
                 Some(t) => t,
                 None => {
-                    return EvalResult::Err(RuntimeErrorKind::Internal(
-                        "TableInfo missing in output".into(),
-                    ));
+                    return EvalResult::Err(RuntimeErrorKind::Internal("TableInfo missing".into()));
                 }
             };
-
             table_info
                 .fields
                 .iter()
@@ -315,18 +307,47 @@ impl<'a> Interpreter<'a> {
                 .collect()
         };
 
-        // --- Step 2: 执行阶段 (读写) ---
-        // 切换到全局环境
-        self.environment = self.globals.clone();
+        // --- Step 2: 执行阶段 (关键修改) ---
 
-        // 现在我们可以安全地遍历 fields_to_init，因为它是独立的 Vec，不依赖 self
+        // 1. 保存“案发现场” (Caller's Context)
+        // 这是当前正在执行代码的环境 (比如 main.lm)
+        let caller_env = self.environment.clone();
+        let caller_globals = self.globals.clone();
+
+        // 2. 找到“定义现场” (Definer's Context)
+        //我们要找到这个类 (def) 是在哪个文件 (file_id) 定义的，并拿到那个文件的环境
+        let definer_env = if let Some(Value::Module(_, env)) = self.module_cache.get(&file_id) {
+            env.clone()
+        } else {
+            // 如果缓存里没有，这通常是不可能的（因为你要用它，肯定已经加载了），
+            // 除非是当前文件自己实例化自己，且尚未写入缓存。
+            // 兜底策略：如果 file_id 就是当前执行的文件，直接用当前的 globals
+            if file_id == self.current_file_id {
+                self.globals.clone()
+            } else {
+                return EvalResult::Err(RuntimeErrorKind::Internal(format!(
+                    "Module environment for file {:?} not found in cache",
+                    file_id
+                )));
+            }
+        };
+
+        // 3. 切换环境
+        // self.environment 控制局部变量查找 (对于字段初始化，通常没有局部变量，但为了一致性设为 def_env)
+        // self.globals 控制全局变量查找 (这最重要，决定了 default_hp 找谁)
+        self.environment = definer_env.clone();
+        self.globals = definer_env;
+
+        // 4. 执行初始化
+        // 此时调用 self.evaluate，它眼中的“世界”变成了 lib.lm
         for (name, init_expr_opt) in fields_to_init {
             let value = if let Some(expr) = &init_expr_opt {
-                // 现在调用 self.evaluate 是安全的，因为没有其他对 self 的引用了
                 match self.evaluate(expr) {
                     EvalResult::Ok(v) => v,
                     other => {
+                        // 出错如果要提前返回，一定要记得恢复环境！
                         self.environment = caller_env;
+                        self.globals = caller_globals;
                         return other;
                     }
                 }
@@ -336,95 +357,17 @@ impl<'a> Interpreter<'a> {
             fields_map.insert(name, value);
         }
 
-        // 恢复环境
+        // 5. 恢复环境
         self.environment = caller_env;
+        self.globals = caller_globals;
 
+        // --- Step 3: 构造实例 ---
         let instance = Rc::new(Instance {
             table_id,
             fields: RefCell::new(fields_map),
         });
 
         EvalResult::Ok(Value::Instance(instance))
-    }
-
-    /// === 3. 调用方法 ===
-    fn call_method(&mut self, receiver: Value, method_name: Symbol, args: &[Value]) -> EvalResult {
-        let instance = match &receiver {
-            Value::Instance(i) => i.clone(),
-            _ => {
-                return EvalResult::Err(RuntimeErrorKind::Internal(
-                    "Cannot call method on non-instance".into(),
-                ));
-            }
-        };
-
-        // 使用 instance.table_id 去查表
-        let method_def = {
-            let table_def = match self.table_definitions.get(&instance.table_id) {
-                Some(d) => d,
-                None => {
-                    let t_name = self.ctx.resolve_symbol(instance.table_id.symbol());
-                    return EvalResult::Err(RuntimeErrorKind::Internal(format!(
-                        "Runtime Def Missing: Table '{}' definition not found",
-                        t_name
-                    )));
-                }
-            };
-
-            let found = table_def.items.iter().find_map(|item| {
-                if let TableItem::Method(m) = item {
-                    if m.name == method_name {
-                        return Some(m);
-                    }
-                }
-                None
-            });
-
-            match found {
-                Some(m) => m.clone(),
-                None => {
-                    let m_name = self.ctx.resolve_symbol(method_name);
-                    let t_name = self.ctx.resolve_symbol(instance.table_id.symbol());
-                    return EvalResult::Err(RuntimeErrorKind::PropertyNotFound {
-                        target_type: t_name.to_string(),
-                        property: m_name.to_string(),
-                    });
-                }
-            }
-        };
-
-        // 准备环境
-        let mut method_env = Environment::with_enclosing(self.globals.clone());
-        method_env.define(self.ctx.intern("self"), receiver.clone());
-
-        if args.len() != method_def.params.len() {
-            return EvalResult::Err(RuntimeErrorKind::ArgumentCountMismatch {
-                func_name: self.ctx.resolve_symbol(method_def.name).to_string(),
-                expected: method_def.params.len(),
-                found: args.len(),
-            });
-        }
-        for (i, param) in method_def.params.iter().enumerate() {
-            method_env.define(param.name, args[i].clone());
-        }
-
-        let prev_env = self.environment.clone();
-        self.environment = Rc::new(RefCell::new(method_env));
-
-        let result = if let Some(body) = &method_def.body {
-            self.execute_block(body)
-        } else {
-            EvalResult::Err(RuntimeErrorKind::Internal(
-                "Cannot call abstract method".into(),
-            ))
-        };
-
-        self.environment = prev_env;
-
-        match result {
-            EvalResult::Return(v) => EvalResult::Ok(v),
-            other => other,
-        }
     }
 
     /// === 通用调用入口 ===

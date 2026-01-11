@@ -3,40 +3,35 @@ use crate::context::Context;
 use std::path::{Path, PathBuf};
 
 /// 将 AST 中的 Use 路径转换为文件系统路径
-/// import_path: ["utils", "math"]
-/// current_file_dir: 当前正在解析的文件所在的目录
+/// 强制 Modern Style: 模块必须对应一个 .lm 文件
 pub fn resolve_module_path(
     ctx: &Context,
     anchor: &UseAnchor,
     path_segments: &[String],
     current_file_dir: &Path,
 ) -> Option<PathBuf> {
-    let mut base_path = match anchor {
+    // 1. 确定基准目录
+    let mut target_path = match anchor {
         UseAnchor::Root => ctx.root_dir.clone(),
         UseAnchor::Current => current_file_dir.to_path_buf(),
         UseAnchor::Parent => current_file_dir.parent()?.to_path_buf(),
     };
 
-    // 拼接路径片段
+    // 2. 拼接路径片段
+    // e.g. use utils.math -> path/to/root/utils/math
     for segment in path_segments {
-        base_path.push(segment);
+        target_path.push(segment);
     }
 
-    // Loom 约定：模块通常以 .lm 结尾
-    // 先尝试直接拼接 .lm
-    let mut file_path = base_path.clone();
-    file_path.set_extension("lm");
+    // 3. 加上扩展名 .lm
+    // e.g. path/to/root/utils/math.lm
+    target_path.set_extension("lm");
 
-    if file_path.exists() {
-        return Some(file_path);
+    // 4. 检查是否存在
+    // 只有当它是一个真实存在的文件时才返回
+    if target_path.exists() && target_path.is_file() {
+        Some(target_path)
+    } else {
+        None
     }
-
-    // 也可以支持包目录风格： use utils -> utils/mod.lm (类似于 Rust)
-    let mut mod_path = base_path.clone();
-    mod_path.push("mod.lm");
-    if mod_path.exists() {
-        return Some(mod_path);
-    }
-
-    None
 }
