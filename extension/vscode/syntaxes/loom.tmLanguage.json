@@ -15,19 +15,22 @@
             "include": "#function-def"
         },
         {
+            "include": "#imports"
+        },
+        {
             "include": "#keywords"
         },
         {
             "include": "#types"
         },
         {
+            "include": "#numbers"
+        },
+        {
             "include": "#function-calls"
         },
         {
             "include": "#member-access"
-        },
-        {
-            "include": "#numbers"
         },
         {
             "include": "#operators"
@@ -40,8 +43,8 @@
         "comments": {
             "patterns": [
                 {
-                    "name": "comment.line.number-sign.loom",
-                    "match": "#.*$"
+                    "name": "comment.line.double-slash.loom",
+                    "match": "//.*$"
                 }
             ]
         },
@@ -60,44 +63,92 @@
             "name": "constant.numeric.loom",
             "match": "\\b\\d+(\\.\\d+)?\\b"
         },
-        "class-def": {
-            "name": "meta.class.loom",
-            "match": "^\\s*(\\[)([a-zA-Z_][a-zA-Z0-9_]*)(\\s*(:)\\s*([a-zA-Z_][a-zA-Z0-9_<>]*))?(\\])",
+        "imports": {
+            "name": "meta.import.loom",
+            "match": "\\b(use)\\s+([a-zA-Z_][a-zA-Z0-9_\\.]*)(\\s+(as)\\s+([a-zA-Z_][a-zA-Z0-9_]*))?",
             "captures": {
                 "1": {
-                    "name": "punctuation.definition.tag.begin.loom"
+                    "name": "keyword.control.import.loom"
+                },
+                "2": {
+                    "name": "entity.name.namespace.loom"
+                },
+                "3": {
+                    "name": "keyword.control.import.loom"
+                },
+                "4": {
+                    "name": "entity.name.namespace.loom"
+                }
+            }
+        },
+        "class-def": {
+            "name": "meta.class.loom",
+            "comment": "匹配 class Name<T> : Parent",
+            "match": "\\b(class)\\s+([a-zA-Z_][a-zA-Z0-9_]*)(\\s*<.*?>)?(\\s*(:)\\s*([a-zA-Z_][a-zA-Z0-9_\\.]*))?",
+            "captures": {
+                "1": {
+                    "name": "storage.type.class.loom"
                 },
                 "2": {
                     "name": "entity.name.type.class.loom"
                 },
                 "3": {
-                    "name": "punctuation.separator.inheritance.loom"
-                },
-                "4": {
-                    "name": "punctuation.separator.inheritance.loom"
+                    "name": "entity.name.type.generic.loom"
                 },
                 "5": {
-                    "name": "entity.other.inherited-class.loom"
+                    "name": "keyword.operator.inheritance.loom"
                 },
                 "6": {
-                    "name": "punctuation.definition.tag.end.loom"
+                    "name": "entity.other.inherited-class.loom"
                 }
             }
         },
         "function-def": {
-            "comment": "匹配 name = (...)，区分方法定义",
-            "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(=)\\s*(?=\\()",
+            "name": "meta.function.loom",
+            "comment": "匹配 fn name(args) Type",
+            "match": "\\b(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
             "captures": {
                 "1": {
-                    "name": "entity.name.function.loom"
+                    "name": "storage.type.function.loom"
                 },
                 "2": {
-                    "name": "keyword.operator.assignment.loom"
+                    "name": "entity.name.function.loom"
                 }
             }
         },
+        "keywords": {
+            "patterns": [
+                {
+                    "name": "keyword.control.loom",
+                    "match": "\\b(if|else|while|for|in|return|break|continue|and|or|not)\\b"
+                },
+                {
+                    "name": "constant.language.loom",
+                    "match": "\\b(true|false|nil)\\b"
+                },
+                {
+                    "name": "variable.language.loom",
+                    "match": "\\b(self)\\b"
+                },
+                {
+                    "name": "keyword.other.loom",
+                    "match": "\\b(as)\\b"
+                }
+            ]
+        },
+        "types": {
+            "patterns": [
+                {
+                    "name": "storage.type.primitive.loom",
+                    "match": "\\b(int|float|bool|str|char|void|any)\\b"
+                },
+                {
+                    "name": "entity.name.type.loom",
+                    "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
+                }
+            ]
+        },
         "function-calls": {
-            "comment": "匹配 print(...) 这种调用形式",
             "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
             "captures": {
                 "1": {
@@ -106,7 +157,6 @@
             }
         },
         "member-access": {
-            "comment": "匹配 .name 或 .version",
             "match": "(\\.)\\s*([a-zA-Z_][a-zA-Z0-9_]*)",
             "captures": {
                 "1": {
@@ -117,34 +167,13 @@
                 }
             }
         },
-        "keywords": {
-            "patterns": [
-                {
-                    "name": "keyword.control.loom",
-                    "match": "\\b(if|else|while|for|in|return|self)\\b"
-                }
-            ]
-        },
-        "types": {
-            "patterns": [
-                {
-                    "name": "storage.type.primitive.loom",
-                    "match": "\\b(int|float|bool|str|char|void)\\b"
-                },
-                {
-                    "name": "entity.name.type.loom",
-                    "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
-                }
-            ]
-        },
         "operators": {
-            "match": "(=>|\\.\\.|\\+|-|\\*|/|=|:)",
-            "name": "keyword.operator.loom"
+            "name": "keyword.operator.loom",
+            "match": "(=>|\\.\\.|\\+|-|\\*|/|%|=|==|!=|<|>|<=|>=|:|!|\\+=|-=|\\*=|/=|%=)"
         },
         "variables": {
-            "comment": "兜底规则，其他的标识符就是普通变量",
-            "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b",
-            "name": "variable.other.loom"
+            "name": "variable.other.loom",
+            "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
         }
     },
     "scopeName": "source.loom"

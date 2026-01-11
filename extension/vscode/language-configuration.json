@@ -1,6 +1,6 @@
 {
     "comments": {
-        "lineComment": "#"
+        "lineComment": "//"
     },
     "brackets": [
         [
@@ -35,6 +35,13 @@
             "notIn": [
                 "string"
             ]
+        },
+        {
+            "open": "<",
+            "close": ">",
+            "notIn": [
+                "string"
+            ]
         }
     ],
     "surroundingPairs": [
@@ -53,6 +60,14 @@
         [
             "\"",
             "\""
+        ],
+        [
+            "<",
+            ">"
         ]
-    ]
+    ],
+    "indentationRules": {
+        "increaseIndentPattern": "^\\s*(class|fn|if|else|for|while|match).*$",
+        "decreaseIndentPattern": "^\\s*(else|elif).*$"
+    }
 }
