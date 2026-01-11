@@ -469,10 +469,9 @@ impl<'a> Parser<'a> {
         }
 
         // Case 2: (ident : ...)
-        if self.check_nth(1, TokenKind::Identifier)
-            && self.check_nth(2, TokenKind::Colon) {
-                return true;
-            }
+        if self.check_nth(1, TokenKind::Identifier) && self.check_nth(2, TokenKind::Colon) {
+            return true;
+        }
 
         false
     }

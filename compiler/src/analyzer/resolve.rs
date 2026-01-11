@@ -73,10 +73,11 @@ impl<'a> Analyzer<'a> {
             // [Critical] 只有当父类也在当前文件时，才需要递归 resolve_table
             // 如果父类在外部文件，说明那个文件已经分析过了 (Status: Resolved)，不需要再跑 resolve_table
             if parent_id.file_id() == self.current_file_id
-                && self.resolve_table(parent_id, resolved, visiting).is_err() {
-                    visiting.remove(&table_id);
-                    return Err(());
-                }
+                && self.resolve_table(parent_id, resolved, visiting).is_err()
+            {
+                visiting.remove(&table_id);
+                return Err(());
+            }
 
             // 3. 执行填充 (The Static Copy)
             // 无论是本地还是外部，都执行这个！

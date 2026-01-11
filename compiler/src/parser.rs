@@ -214,9 +214,10 @@ impl<'a> Parser<'a> {
                                 hex_string.push(chars.next().unwrap());
                             }
                             if let Ok(code) = u32::from_str_radix(&hex_string, 16)
-                                && let Some(uni_char) = std::char::from_u32(code) {
-                                    result.push(uni_char);
-                                }
+                                && let Some(uni_char) = std::char::from_u32(code)
+                            {
+                                result.push(uni_char);
+                            }
                         } else {
                             result.push('u');
                         }

@@ -43,10 +43,11 @@ impl<'a> Lexer<'a> {
 
     fn match_char(&mut self, expected: char) -> bool {
         if let Some(&c) = self.chars.peek()
-            && c == expected {
-                self.advance();
-                return true;
-            }
+            && c == expected
+        {
+            self.advance();
+            return true;
+        }
         false
     }
 

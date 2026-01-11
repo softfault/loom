@@ -23,7 +23,7 @@ impl Interner {
             return sym;
         }
 
-        let sym = unsafe { std::mem::transmute(self.vec.len()) };
+        let sym = unsafe { std::mem::transmute::<usize, Symbol>(self.vec.len()) };
         let name_string = name.to_string();
         self.vec.push(name_string.clone());
         self.map.insert(name_string, sym);

@@ -67,8 +67,10 @@ impl<'a> Analyzer<'a> {
         };
 
         // 5. 注册符号
-        if self.scopes
-                .define(name, func_type, SymbolKind::Function, def.span, id, false).is_err()
+        if self
+            .scopes
+            .define(name, func_type, SymbolKind::Function, def.span, id, false)
+            .is_err()
         {
             let name_str = self.ctx.resolve_symbol(name).to_string();
             self.report(def.span, SemanticErrorKind::DuplicateDefinition(name_str));
@@ -99,14 +101,18 @@ impl<'a> Analyzer<'a> {
         };
 
         // [Fix] 注册并处理错误
-        if self.scopes.define(
-            def.name,
-            ty.clone(),
-            SymbolKind::Variable,
-            def.span,
-            self.current_file_id,
-            false,
-        ).is_err() {
+        if self
+            .scopes
+            .define(
+                def.name,
+                ty.clone(),
+                SymbolKind::Variable,
+                def.span,
+                self.current_file_id,
+                false,
+            )
+            .is_err()
+        {
             // 从 interner 解析出字符串名称用于报错
             let name_str = self.ctx.resolve_symbol(def.name).to_string();
             self.report(def.span, SemanticErrorKind::DuplicateDefinition(name_str));
@@ -133,14 +139,18 @@ impl<'a> Analyzer<'a> {
         let table_id = TableId(id, name);
 
         // 1. 注册全局符号
-        if self.scopes.define(
-            name,
-            Type::Table(table_id),
-            SymbolKind::Table,
-            def.span,
-            id,
-            false,
-        ).is_err() {
+        if self
+            .scopes
+            .define(
+                name,
+                Type::Table(table_id),
+                SymbolKind::Table,
+                def.span,
+                id,
+                false,
+            )
+            .is_err()
+        {
             let name_str = self.ctx.resolve_symbol(name).to_string();
             self.report(def.span, SemanticErrorKind::DuplicateDefinition(name_str));
             return;
@@ -161,7 +171,10 @@ impl<'a> Analyzer<'a> {
         }
 
         // 3. 解析继承关系
-        let parent = def.prototype.as_ref().map(|proto_type| self.resolve_ast_type(proto_type, &local_generics_scope));
+        let parent = def
+            .prototype
+            .as_ref()
+            .map(|proto_type| self.resolve_ast_type(proto_type, &local_generics_scope));
 
         // 4. 解析 Fields 和 Methods
         let mut fields = HashMap::new();
@@ -345,14 +358,18 @@ impl<'a> Analyzer<'a> {
 
         // 5. 将模块注册到当前作用域
         // [Key Fix] 使用 file_id 构造 Type::Module
-        if self.scopes.define(
-            import_name,
-            Type::Module(file_id), // <--- 这里现在正确使用了 FileId
-            SymbolKind::Variable,  // 模块在当前作用域表现为一个变量
-            stmt.span,
-            self.current_file_id,
-            false, // 模块引用通常不可变
-        ).is_err() {
+        if self
+            .scopes
+            .define(
+                import_name,
+                Type::Module(file_id), // <--- 这里现在正确使用了 FileId
+                SymbolKind::Variable,  // 模块在当前作用域表现为一个变量
+                stmt.span,
+                self.current_file_id,
+                false, // 模块引用通常不可变
+            )
+            .is_err()
+        {
             let name = self.ctx.resolve_symbol(import_name).to_string();
             self.report(stmt.span, SemanticErrorKind::DuplicateDefinition(name));
         }

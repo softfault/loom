@@ -97,13 +97,14 @@ impl<'a> Analyzer<'a> {
 
         // 应用推导结果
         if !updates.is_empty()
-            && let Some(info) = self.tables.get_mut(&table_id) {
-                for (name, new_ty) in updates {
-                    if let Some(field_info) = info.fields.get_mut(&name) {
-                        field_info.ty = new_ty;
-                    }
+            && let Some(info) = self.tables.get_mut(&table_id)
+        {
+            for (name, new_ty) in updates {
+                if let Some(field_info) = info.fields.get_mut(&name) {
+                    field_info.ty = new_ty;
                 }
             }
+        }
     }
 
     // [New] 检查顶层变量定义 (例如: count: int = 10)
@@ -180,11 +181,12 @@ impl<'a> Analyzer<'a> {
 
         if let Some(parent_ref_ty) = &child.parent
             && let Type::GenericInstance { args, .. } = parent_ref_ty
-                && args.len() == parent.generic_params.len() {
-                    for (i, param_sym) in parent.generic_params.iter().enumerate() {
-                        type_mapping.insert(*param_sym, args[i].clone());
-                    }
-                }
+            && args.len() == parent.generic_params.len()
+        {
+            for (i, param_sym) in parent.generic_params.iter().enumerate() {
+                type_mapping.insert(*param_sym, args[i].clone());
+            }
+        }
 
         // 2. 检查字段覆盖兼容性
         // 注意：child_info 现在是 FieldInfo，包含 .ty 和 .span

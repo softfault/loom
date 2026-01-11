@@ -53,10 +53,9 @@ impl ScopeManager {
     ) -> Result<(), SymbolKind> {
         let current_scope = self.scopes.last_mut().unwrap();
 
-        if !allow_shadow
-            && let Some(existing) = current_scope.symbols.get(&name) {
-                return Err(existing.kind.clone());
-            }
+        if !allow_shadow && let Some(existing) = current_scope.symbols.get(&name) {
+            return Err(existing.kind.clone());
+        }
 
         current_scope.symbols.insert(
             name,

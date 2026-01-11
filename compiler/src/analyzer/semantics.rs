@@ -2,6 +2,7 @@ use super::types::Type;
 use crate::utils::{NodeId, Span, Symbol};
 use std::collections::HashMap;
 
+#[allow(unused)]
 /// 语义数据库：存储 Analyzer 分析出的所有信息
 #[derive(Debug, Default)]
 pub struct SemanticDB {
@@ -20,6 +21,7 @@ pub struct SemanticDB {
     pub docs: HashMap<Symbol, String>,
 }
 
+#[allow(unused)]
 impl SemanticDB {
     pub fn record_type(&mut self, id: NodeId, ty: Type) {
         self.type_map.insert(id, ty);
