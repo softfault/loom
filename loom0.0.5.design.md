@@ -1241,3 +1241,70 @@ fn main() {
 * **编译期处理**：Loom 编译器在解析阶段就能通过符号表分辨出目标是 `macro` 还是 `fn`。
 * **显式导入**：由于必须 `use std.debug.println` 才能使用，导入路径明确告知了这是一个来自标准库的功能，消除了混淆的风险。
 
+## 外部函数接口 
+
+Loom 将与 C 语言的互操作性视为头等大事。FFI 的设计目标是零开销且直观。Loom 默认仅支持 C 语言的 ABI（应用程序二进制接口）。
+
+### 1. 引入外部符号
+
+使用 `extern` 块声明外部 C 函数或全局变量。在 `extern` 块中声明的符号默认遵循 C 调用约定（C Calling Convention）。
+
+```loom
+// 声明外部 C 函数
+extern {
+    fn printf(fmt: &u8, ...) i32;
+    fn malloc(size: usize) &mut u8;
+    fn free(ptr: &mut u8);
+}
+
+fn main() {
+    let msg = "Hello from C!\n\0";
+    printf(&msg[0]); 
+}
+
+```
+
+### 2. 结构体布局
+
+这是 Loom 与 C 交互时最重要的区别：
+
+* **普通结构体 (`struct`)**：Loom 编译器**不保证**字段在内存中的顺序。为了优化内存占用（减少 Padding），编译器会自动重排字段顺序。因此，普通的 Loom 结构体不能直接传给 C 代码。
+* **外部结构体 (`extern struct`)**：使用 `extern` 修饰的结构体将强制采用 **C 兼容布局**。字段将严格按照声明顺序排列，并遵循标准 C 的内存对齐规则。
+
+```loom
+// [Loom 布局]
+// 编译器可能会重排字段（例如把 x 和 z 放在一起）以节省空间
+struct OptimizeMe {
+    x: u8,
+    y: i64, // 8字节
+    z: u8,
+}
+
+// [C 布局]
+// 严格匹配 C 语言：u8 -> padding(7) -> i64 -> u8 -> padding(7)
+// 可以安全地传给 C 函数
+extern struct CRect {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+
+```
+
+### 3. 类型兼容性
+
+除结构体布局外，Loom 的基本类型设计旨在与 C 保持高度兼容：
+
+* **整数/浮点数**：`i32`, `u8`, `f64` 等类型与 C 的对应类型二进制兼容。
+* **指针**：Loom 的指针 `&T` 和 `*T` 在 ABI 层面等同于 C 指针。
+* **函数**：被标记为 `extern` 的 Loom 函数也会使用 C 调用约定，从而可以被 C 代码回调。
+
+```loom
+// 导出给 C 调用的函数
+pub extern fn loom_callback(val: i32) {
+    std.debug.println("Called from C with: {}", val);
+}
+
+```
+
