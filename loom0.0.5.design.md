@@ -630,7 +630,7 @@ if found {
 
 ### 错误处理
 
-推荐使用标准库`std.result`中定义的Result(T, E) 和Option(T, E)。标准库很多都会返回这两个。
+推荐使用标准库`std.result`中定义的Result(T, E) 和Option(T)。标准库很多都会返回这两个。
 
 ## 函数与模块化
 
