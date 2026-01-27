@@ -1,0 +1,108 @@
+enum Result<T, E> {
+    Ok(T),
+    Err(E)
+}
+
+enum ListError {
+    OutOfMemory,
+    IndexOutOfBounds
+}
+
+trait Allocator {
+    fn alloc(self, size: usize) ?*mut u8;
+    fn realloc(self, ptr: ?*mut u8, old_size: usize, new_size: usize) ?*mut u8;
+    fn free(self, ptr: ?*mut u8);
+}
+
+struct ArrayList<T> {
+    ptr: ?*mut T, 
+    len: usize,
+    cap: usize,
+    allocator: &mut Allocator, 
+    pub fn init(alloc: &mut Allocator) ArrayList<T> {
+        // 直接返回结构体字面量
+        // 这里的字段在模块内是可见的
+        ArrayList {
+            _ptr: null, 
+            len: 0,
+            cap: 0,
+            allocator: alloc
+        }
+    }
+}
+
+
+impl <T> ArrayList<T> {
+    pub fn deinit(self) {
+        self.allocator.free(self._ptr as ?*mut u8);
+    }
+}
+
+impl <T> &mut ArrayList<T> {
+    fn _grow(self) Result<(), ListError> {
+        let new_cap = if self.cap == 0 { 8 } else { self.cap * 2 };
+        let old_bytes = self.cap * @sizeof.<T>();
+        let new_bytes = new_cap * @sizeof.<T>();
+
+        let raw = self.allocator.realloc(self._ptr as ?*mut u8, old_bytes, new_bytes);
+
+        if raw == null {
+            return .Err(.OutOfMemory);
+        }
+
+        self._ptr = raw as *mut T; 
+        self.cap = new_cap;
+        
+        .Ok(());
+    }
+
+    pub fn push(self, item: T) Result<(), ListError> {
+        if self.len >= self.cap {
+            // 尝试扩容，处理错误
+            match self._grow() {
+                .Err(e) => return .Err(e),
+                .Ok(_) => {} 
+            }
+        }
+
+        let base = self._ptr ? unreach; 
+        let target = base + self.len;
+        target.* = item;
+        self.len += 1;
+        .Ok(());
+    }
+}
+
+impl <T> &ArrayList<T> {
+    pub fn get(self, index: usize) ?&T {
+        if index >= self.len {
+            return null;
+        }
+
+        // 1. self._ptr.?  -> 解包拿到 *mut T (非空)
+        // 2. + index      -> 指针算术
+        // 3. .*           -> 解引用拿到 T (值)
+        // 4. &            -> 取地址返回 &T
+        return &(self._ptr.? + index).*;
+    }
+    
+    pub fn len(self) usize {
+        self.len
+    }
+}
+
+pub fn main() ?i32 {
+    let gpa = GeneralPurposeAllocator.init();
+    defer let _ = gpa.deinit();
+    let mut alloc = gpa.allocator();
+    
+    let mut list = ArrayList.<i32>.init(&mut alloc);
+    defer list.deinit();
+
+    list.push(10).?; 
+    list.push(20).?;
+
+    let val_ref = list.get(0);
+
+    print(val_ref.?); 
+}

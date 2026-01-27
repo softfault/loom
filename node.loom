@@ -1,0 +1,67 @@
+extern {
+    fn malloc(size: usize) ?*u8;
+    fn free(ptr: ?*u8);
+    fn printf(fmt: *u8, ...) i32;
+}
+
+struct Node<T> {
+    data: T,
+    next: ?*Self,
+}
+
+impl ?*Node<T> {
+    fn reverse(self) Self {
+        let mut prev: Self = null;
+        let mut curr = self;
+        let mut next: Self = null;
+        
+        for ; curr != null; {
+            next = curr.*.next;
+            curr.*.next = prev;
+            prev = curr;
+            curr = next;
+        }
+        return prev;
+    }
+    
+    fn print_list(self) {
+        let mut curr = self;
+        for ; curr != null; {
+            printf("%d -> ", curr.*.data);
+            curr = curr.*.next? unreach;
+        }
+        printf("null\n");
+    }
+}
+
+pub fn main() ?i32 {
+    const N: usize = 3;
+    const SIZE = N * @sizeof.<Node<i32>>();
+
+    let raw_ptr = malloc(SIZE).? as *mut Node<i32>;
+    let nodes = raw_ptr[mut 0..N];
+
+    for let mut i = 0; i < N; i += 1 {
+        nodes[i].data = i as i32;
+        
+        if i < N - 1 {
+            nodes[i].next = &nodes[i + 1];
+        } else {
+            nodes[i].next = null;
+        }
+    }
+
+    let head = &nodes[0];
+    let _ = printf("Original: ");
+    head.print_list();
+
+    let new_head = head.reverse();
+    let _ = printf("Reversed: ");
+    new_head.print_list();
+
+    free(raw_ptr as ?*u8);
+    
+    return 0;
+}
+
+
