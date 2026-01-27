@@ -1,0 +1,724 @@
+const std = @import("std");
+const Token = @import("token.zig").Token;
+const TokenType = @import("token.zig").TokenType;
+const Span = @import("utils.zig").Span;
+const SymbolId = @import("utils.zig").SymbolId;
+
+/// 二元运算符
+pub const BinaryOperator = enum {
+    // 算术
+    Add, // +
+    Subtract, // -
+    Multiply, // *
+    Divide, // /
+    Modulo, // %
+
+    // 比较
+    Equal, // ==
+    NotEqual, // !=
+    LessThan, // <
+    GreaterThan, // >
+    LessOrEqual, // <=
+    GreaterOrEqual, // >=
+
+    // 逻辑
+    LogicalAnd, // and
+    LogicalOr, // or
+
+    // 位运算
+    BitwiseAnd, // &
+    BitwiseOr, // |
+    BitwiseXor, // ^
+    ShiftLeft, // <<
+    ShiftRight, // >>
+
+    pub fn fromToken(token: TokenType) BinaryOperator {
+        return switch (token) {
+            .Plus => .Add,
+            .Minus => .Subtract,
+            .Star => .Multiply,
+            .Slash => .Divide,
+            .Percent => .Modulo,
+            .Equal => .Equal,
+            .NotEqual => .NotEqual,
+            .LessThan => .LessThan,
+            .GreaterThan => .GreaterThan,
+            .LessEqual => .LessOrEqual,
+            .GreaterEqual => .GreaterOrEqual,
+            .And => .LogicalAnd,
+            .Or => .LogicalOr,
+            .Ampersand => .BitwiseAnd,
+            .Pipe => .BitwiseOr,
+            .Caret => .BitwiseXor,
+            .LShift => .ShiftLeft,
+            .RShift => .ShiftRight,
+            else => unreachable, // Parser 逻辑保证了只会传合法的 token 进来
+        };
+    }
+};
+
+/// 一元运算符
+pub const UnaryOperator = enum {
+    Negate, // - (负号)
+    LogicalNot, // ! (逻辑非)
+    BitwiseNot, // ~ (按位取反)
+    AddressOf, // & (取地址)
+    Dereference, // .& (解引用)
+    Optional, // ? (判空)
+    LengthOf, // # (取长度)
+};
+
+/// 赋值运算符
+pub const AssignmentOperator = enum {
+    Assign, // =
+    AddAssign, // +=
+    SubtractAssign, // -=
+    MultiplyAssign, // *=
+    DivideAssign, // /=
+    ModuloAssign, // %=
+    BitwiseAndAssign, // &=
+    BitwiseOrAssign, // |=
+    BitwiseXorAssign, // ^=
+    ShiftLeftAssign, // <<=
+    ShiftRightAssign, // >>=
+
+    pub fn fromToken(token: TokenType) AssignmentOperator {
+        return switch (token) {
+            .Assign => .Assign,
+            .PlusAssign => .AddAssign,
+            .MinusAssign => .SubtractAssign,
+            .StarAssign => .MultiplyAssign,
+            .SlashAssign => .DivideAssign,
+            .PercentAssign => .ModuloAssign,
+            .AmpersandAssign => .BitwiseAndAssign,
+            .PipeAssign => .BitwiseOrAssign,
+            .CaretAssign => .BitwiseXorAssign,
+            .LShiftAssign => .ShiftLeftAssign,
+            .RShiftAssign => .ShiftRightAssign,
+            else => unreachable, // 同上
+        };
+    }
+};
+
+/// 表达式
+/// Loom 中类型也是表达式，所以 [4]i32 这种类型构造也在这里
+pub const Expression = union(enum) {
+    // 基础值
+    Literal: Literal,
+    Identifier: Identifier,
+
+    // 运算
+    Binary: *BinaryExpression,
+    Unary: *UnaryExpression,
+    Assignment: *AssignmentExpression,
+
+    // 访问与调用
+    FunctionCall: *FunctionCallExpression, // foo(1, 2) 或 Point(i32)
+    // 泛型实例化: List<i32> (类型上下文) 或 func.<i32> (表达式上下文)
+    GenericInstantiation: *GenericInstantiationExpression,
+    MemberAccess: *MemberAccessExpression, // obj.field
+    IndexAccess: *IndexAccessExpression, // arr[index]
+    Unwrap: *UnwrapExpression, // ptr.?
+    Propagate: *PropagateExpression, // result?
+    // 宏调用表达式
+    MacroCall: *MacroCallExpression,
+
+    // 专门用于 use 语句的组导入
+    // use std.debug.{print, assert};
+    ImportGroup: *ImportGroupExpression,
+
+    // 复合字面量
+    StructInitialization: *StructInitializationExpression, // Point { x: 1 }
+    ArrayInitialization: *ArrayInitializationExpression, // [1, 2, 3]
+    TupleInitialization: *TupleInitializationExpression, // (1, "a")
+
+    // 控制流表达式
+    If: *IfExpression,
+    Match: *MatchExpression,
+    Block: *BlockExpression, // { stmt; stmt; expr }
+
+    // 类型构造表达式
+    PointerType: *PointerTypeExpression, // &T, *mut T
+    SliceType: *SliceTypeExpression, // []T
+    ArrayType: *ArrayTypeExpression, // [N]T
+    OptionalType: *OptionalTypeExpression, // ?T
+    FunctionType: *FunctionTypeExpression, // fn(i32) i32
+
+    /// 获取表达式的 Span
+    pub fn span(self: Expression) Span {
+        return switch (self) {
+            .Literal => |v| v.span,
+            .Identifier => |v| v.span,
+            .Binary => |v| v.span,
+            .Unary => |v| v.span,
+            .Assignment => |v| v.span,
+            .FunctionCall => |v| v.span,
+            .GenericInstantiation => |v| v.span,
+            .MemberAccess => |v| v.span,
+            .IndexAccess => |v| v.span,
+            .Unwrap => |v| v.span,
+            .ImportGroup => |v| v.span,
+            .Propagate => |v| v.span,
+            .MacroCall => |v| v.span,
+            .StructInitialization => |v| v.span,
+            .ArrayInitialization => |v| v.span,
+            .TupleInitialization => |v| v.span,
+            .If => |v| v.span,
+            .Match => |v| v.span,
+            .Block => |v| v.span,
+            .PointerType => |v| v.span,
+            .SliceType => |v| v.span,
+            .ArrayType => |v| v.span,
+            .OptionalType => |v| v.span,
+            .FunctionType => |v| v.span,
+        };
+    }
+};
+
+// === 具体的表达式结构体 ===
+
+pub const Literal = struct {
+    pub const Kind = enum {
+        Integer,
+        Float,
+        String,
+        Character,
+        Boolean,
+        Undef, // undef 关键字
+        Null,
+    };
+    kind: Kind,
+    value: SymbolId, // 存储字符串化的值，留待语义分析阶段解析为数字
+    span: Span,
+};
+
+pub const Identifier = struct {
+    name: SymbolId,
+    span: Span,
+};
+
+pub const BinaryExpression = struct {
+    operator: BinaryOperator,
+    left: Expression,
+    right: Expression,
+    span: Span,
+};
+
+pub const UnaryExpression = struct {
+    operator: UnaryOperator,
+    operand: Expression,
+    span: Span,
+};
+
+pub const AssignmentExpression = struct {
+    operator: AssignmentOperator,
+    target: Expression, // 左值 (L-Value)
+    value: Expression, // 右值 (R-Value)
+    span: Span,
+};
+
+pub const FunctionCallExpression = struct {
+    callee: Expression, // 被调用的对象 (函数名、泛型类型名、函数指针等)
+    arguments: []CallArgument,
+    span: Span,
+};
+
+pub const CallArgument = struct {
+    name: ?SymbolId, // 如果是位置参数则为 null，如果是命名参数则为名字
+    value: Expression,
+    span: Span,
+};
+
+/// 泛型实例化表达式
+/// 涵盖: Type<Args> (如 List<i32>) 和 Expr.<Args> (如 parse.<i32>)
+pub const GenericInstantiationExpression = struct {
+    base: Expression, // 左边的部分，如 List 或 parse
+    arguments: []Expression, // <...> 里面的参数，通常是类型表达式
+    span: Span,
+};
+
+pub const MemberAccessExpression = struct {
+    object: Expression,
+    member_name: SymbolId,
+    span: Span,
+};
+
+pub const IndexAccessExpression = struct {
+    collection: Expression, // 数组、切片
+    index: Expression, // 索引值
+    span: Span,
+};
+
+/// 解包表达式
+/// 对应语法: expression.?
+pub const UnwrapExpression = struct {
+    operand: Expression,
+    span: Span,
+};
+/// 传播表达式
+/// result?
+pub const PropagateExpression = struct {
+    operand: Expression,
+    span: Span,
+};
+
+/// 宏调用表达式
+/// 例如: vec![1, 2, 3] 或 std.debug.print!("fmt")
+pub const MacroCallExpression = struct {
+    /// 被调用的宏 (通常是 Identifier 或 MemberAccess)
+    /// 例如: "vec" 或 "std.debug.print"
+    callee: Expression,
+
+    /// 宏的参数 (Token Tree)
+    /// 宏调用在语法分析阶段不解析参数内部结构，只保存原始 Token 序列
+    /// 具体的解析留给宏展开器 (Expander)去做
+    arguments: []const Token,
+
+    span: Span,
+};
+
+// 导入组定义
+pub const ImportGroupExpression = struct {
+    parent: Expression, // std.debug
+    sub_paths: []Expression, // [print, assert] (通常是 Identifier，但也允许子路径)
+    span: Span,
+};
+
+pub const StructInitializationExpression = struct {
+    // 可能是 null (如果是匿名结构体或上下文推导)
+    // 对于 `Point { x: 1 }`, 这里是 `Identifier(Point)`
+    type_expression: ?Expression,
+    fields: []StructFieldInit,
+    span: Span,
+};
+
+pub const StructFieldInit = struct {
+    name: SymbolId,
+    value: Expression,
+    span: Span,
+};
+
+pub const ArrayInitializationExpression = struct {
+    elements: []Expression,
+    // 如果是 [0; 1024] 这种语法
+    repeat_count: ?Expression,
+    span: Span,
+};
+
+pub const TupleInitializationExpression = struct {
+    elements: []Expression,
+    span: Span,
+};
+
+pub const IfExpression = struct {
+    condition: Expression,
+    then_branch: *BlockExpression,
+    else_branch: ?Expression, // 可能是 BlockExpression 或另一个 IfExpression (else if)
+    span: Span,
+};
+
+pub const MatchExpression = struct {
+    target: Expression,
+    arms: []MatchArm,
+    span: Span,
+};
+
+pub const MatchArm = struct {
+    pattern: Pattern,
+    body: Expression,
+    span: Span,
+};
+
+pub const BlockExpression = struct {
+    statements: []Statement,
+    // 块的最后一个表达式作为返回值。如果为空，则返回 unit
+    result_expression: ?Expression,
+    span: Span,
+};
+
+// --- 类型构造表达式 ---
+
+pub const PointerTypeExpression = struct {
+    is_mutable: bool, // true: &mut T / *mut T
+    is_volatile: bool, // true: *T (驱动开发用)
+    child_type: Expression, // 指向的类型
+    span: Span,
+};
+
+pub const SliceTypeExpression = struct {
+    child_type: Expression, // []T 中的 T
+    span: Span,
+};
+
+pub const ArrayTypeExpression = struct {
+    size: Expression, // [N]T 中的 N (必须是编译期常量)
+    child_type: Expression, // [N]T 中的 T
+    span: Span,
+};
+
+/// 可选类型表达式 ?T
+pub const OptionalTypeExpression = struct {
+    child_type: Expression,
+    span: Span,
+};
+
+/// 函数类型表达式
+/// 例如: fn(i32, i32) i32
+pub const FunctionTypeExpression = struct {
+    parameters: []Expression, // 参数类型列表
+    return_type: ?Expression, // 返回值类型 (null 表示 unit)
+    is_variadic: bool, // 是否包含 ... (C FFI)
+    span: Span,
+};
+
+/// 模式 (Pattern)
+/// 用于 `let`, `match`, 函数参数解构
+pub const Pattern = union(enum) {
+    Wildcard: Span, // _
+    Literal: Literal, // 1, "abc", true
+    IdentifierBinding: IdentifierBindingPattern, // x, mut x
+    StructDestructuring: StructDestructuringPattern, // Point { x, y }
+    TupleDestructuring: TupleDestructuringPattern, // (a, b)
+    EnumMatching: EnumMatchingPattern, // .Ok(v) 或 Result.Ok(v)
+
+    pub fn span(self: Pattern) Span {
+        return switch (self) {
+            .Wildcard => |s| s,
+            .Literal => |v| v.span,
+            .IdentifierBinding => |v| v.span,
+            .StructDestructuring => |v| v.span,
+            .TupleDestructuring => |v| v.span,
+            .EnumMatching => |v| v.span,
+        };
+    }
+};
+
+pub const IdentifierBindingPattern = struct {
+    name: SymbolId,
+    is_mutable: bool, // let mut x = ...
+    span: Span,
+};
+
+pub const StructDestructuringPattern = struct {
+    type_expression: ?Expression, // Point { ... }
+    fields: []PatternStructField,
+    ignore_remaining: bool,
+    span: Span,
+};
+
+pub const PatternStructField = struct {
+    field_name: SymbolId,
+    pattern: Pattern, // field: pattern
+    span: Span,
+};
+
+pub const TupleDestructuringPattern = struct {
+    elements: []Pattern,
+    span: Span,
+};
+
+pub const EnumMatchingPattern = struct {
+    variant_name: SymbolId, // Ok
+    type_context: ?Expression, // Result.Ok 中的 Result (可选，如果是 .Ok)
+    payloads: []Pattern, // Ok(v) 中的 v
+    span: Span,
+};
+
+/// 语句 (Statement)
+pub const Statement = union(enum) {
+    Let: *LetStatement,
+    Const: *ConstStatement,
+
+    // 表达式语句 (例如函数调用 `do_something();`)
+    ExpressionStatement: Expression,
+
+    For: *ForStatement,
+    Break: *BreakStatement,
+    Continue: *ContinueStatement,
+    Return: *ReturnStatement,
+    Defer: *DeferStatement,
+
+    pub fn span(self: Statement) Span {
+        return switch (self) {
+            .Let => |v| v.span,
+            .Var => |v| v.span,
+            .Const => |v| v.span,
+            .ExpressionStatement => |v| v.span(),
+            .For => |v| v.span,
+            .Break => |v| v.span,
+            .Continue => |v| v.span,
+            .Return => |v| v.span,
+            .Defer => |v| v.span,
+        };
+    }
+};
+
+pub const LetStatement = struct {
+    pattern: Pattern,
+    type_annotation: ?Expression, // : T
+    value: Expression,
+    span: Span,
+};
+
+pub const ConstStatement = struct {
+    name: SymbolId, // const 通常必须显式命名，不能解构太复杂
+    type_annotation: ?Expression,
+    value: Expression,
+    span: Span,
+};
+
+pub const ForStatement = struct {
+    // 三段式: for init; condition; post
+    initializer: ?*Statement, // var i = 0
+    condition: ?Expression, // i < 10
+    post_iteration: ?Expression, // i += 1
+    body: *BlockExpression,
+    span: Span,
+};
+
+pub const BreakStatement = struct {
+    span: Span,
+};
+
+pub const ContinueStatement = struct {
+    span: Span,
+};
+
+pub const ReturnStatement = struct {
+    value: ?Expression,
+    span: Span,
+};
+
+pub const DeferStatement = struct {
+    target: Expression, // defer expression (通常是 block 或 call)
+    span: Span,
+};
+
+/// 声明
+/// 顶层结构的定义
+pub const Declaration = union(enum) {
+    Function: *FunctionDeclaration,
+    Struct: *StructDeclaration,
+    Enum: *EnumDeclaration,
+    Union: *UnionDeclaration,
+    Trait: *TraitDeclaration,
+    Implementation: *ImplementationDeclaration, // impl
+    Macro: *MacroDeclaration,
+    Use: *UseDeclaration,
+    ExternBlock: *ExternBlockDeclaration,
+    // 类型别名: type A = B;
+    TypeAlias: *TypeAliasDeclaration,
+    // 全局变量: pub const PI = 3.14;
+    GlobalVar: *GlobalVarDeclaration,
+};
+
+pub const FunctionDeclaration = struct {
+    name: SymbolId,
+    visibility: Visibility,
+    generics: []GenericParameter,
+    is_extern: bool,
+    parameters: []FunctionParameter,
+    return_type: ?Expression, // unit 如果为 null
+    body: ?*BlockExpression, // extern 函数没有 body
+    span: Span,
+};
+
+pub const Visibility = enum {
+    Private,
+    Public,
+};
+
+pub const GenericParameter = struct {
+    name: SymbolId,
+    constraint: ?Expression, // T: Addable
+    default_value: ?Expression,
+    span: Span,
+};
+
+pub const FunctionParameter = struct {
+    name: SymbolId,
+    type_expression: Expression,
+    default_value: ?Expression, // a: i32 = 0
+    // 标记是否是 Binding Cast 参数
+    // true 表示语法是 `name: as Type`
+    // false 表示语法是 `name: Type`
+    is_binding_cast: bool,
+    is_variadic: bool, // ... (C FFI)
+    span: Span,
+};
+
+pub const StructDeclaration = struct {
+    name: SymbolId,
+    visibility: Visibility,
+    generics: []GenericParameter, // struct Point(T: Any)
+    //  基类: struct Button : Widget
+    // 如果没有继承，则为 null
+    base_type: ?Expression,
+    fields: []StructFieldDeclaration,
+    span: Span,
+};
+
+pub const StructFieldDeclaration = struct {
+    name: SymbolId,
+    visibility: Visibility,
+    type_expression: Expression,
+    default_value: ?Expression,
+    span: Span,
+};
+
+pub const EnumDeclaration = struct {
+    name: SymbolId,
+    visibility: Visibility,
+    generics: []GenericParameter,
+    underlying_type: ?Expression, // enum Color: i32
+    variants: []EnumVariant,
+    span: Span,
+};
+
+pub const EnumVariant = struct {
+    name: SymbolId,
+    // 枚举变体可以是：
+    // 1. Unit (Quit)
+    // 2. Value (Quit = 3)
+    // 3. Struct-like (Move {x: i32})
+    // 4. Tuple-like (Write(String))
+    kind: union(enum) {
+        None,
+        Value: Expression,
+        StructLike: []StructFieldDeclaration,
+        TupleLike: []Expression, // 类型列表
+    },
+    span: Span,
+};
+
+pub const UnionDeclaration = struct {
+    name: SymbolId,
+    visibility: Visibility,
+    generics: []GenericParameter,
+    variants: []UnionVariant,
+    span: Span,
+};
+
+pub const UnionVariant = struct {
+    name: SymbolId,
+    type_expression: Expression,
+    span: Span,
+};
+
+pub const TraitDeclaration = struct {
+    name: SymbolId,
+    visibility: Visibility,
+    generics: []GenericParameter,
+    methods: []FunctionDeclaration, // trait 里的函数通常只有签名
+    span: Span,
+};
+
+// ast.zig
+
+pub const ImplementationDeclaration = struct {
+    // impl<T> 的泛型参数
+    generics: []GenericParameter,
+
+    // impl Point<f32>
+    target_type: Expression,
+    // impl Type: Trait
+    trait_interface: ?Expression,
+    methods: []FunctionDeclaration,
+    span: Span,
+};
+
+pub const UseDeclaration = struct {
+    visibility: Visibility,
+    path: Expression, // std.debug.print (MemberAccess链)
+    alias: ?SymbolId, // as P
+    is_glob: bool, // use std.math.*
+    // 如果是 `use std.{a, b}` 这种组合导入，Parser 可能会展开成多个 UseDecl
+    span: Span,
+};
+
+pub const ExternBlockDeclaration = struct {
+    // extern { ... }
+    declarations: []Declaration,
+    span: Span,
+};
+
+// 类型别名定义
+pub const TypeAliasDeclaration = struct {
+    name: SymbolId,
+    visibility: Visibility,
+    generics: []GenericParameter, // 支持 type Callback<T> = fn(T) void;
+    target: Expression, // 右边的类型表达式
+    span: Span,
+};
+
+// 全局变量定义
+pub const GlobalVarDeclaration = struct {
+    kind: GlobalVarKind,
+    visibility: Visibility,
+    pattern: Pattern, // 通常顶层只允许 Identifier，但为了统一先用 Pattern
+    type_annotation: ?Expression,
+    value: Expression,
+    span: Span,
+};
+
+pub const GlobalVarKind = enum { Let, Const };
+
+/// 宏定义
+/// 宏片段说明符 (对应 $x:expr 中的 expr)
+pub const MacroFragmentSpecifier = enum {
+    Expression, // :expr
+    Identifier, // :ident
+    Type, // :type 或 :ty
+    Statement, // :stmt
+    Block, // :block
+    Path, // :path
+    Literal, // :literal (字符串、数字等)
+    TokenTree, // :tt (任意 Token，最通用)
+};
+
+/// 宏匹配器的一个单元
+pub const MacroMatcher = union(enum) {
+    /// 字面量匹配: 比如 ( $x:expr, $y:expr ) 中的逗号
+    Literal: Token,
+
+    /// 参数捕获: $name:specifier
+    Argument: struct {
+        name: SymbolId,
+        fragment: MacroFragmentSpecifier,
+        span: Span,
+    },
+
+    /// 重复模式: $( ... ) sep op
+    /// 例如: $( $x:expr ),*
+    Repetition: struct {
+        matchers: []MacroMatcher, // 括号内的子匹配器序列
+        separator: ?Token, // 可选分隔符 (例如逗号)
+        op: MacroRepetitionOp, //重复操作符 (*, +, ?)
+        span: Span,
+    },
+};
+
+/// 重复操作符
+pub const MacroRepetitionOp = enum {
+    ZeroOrMore, // *
+    OneOrMore, // +
+    ZeroOrOne, // ?
+};
+
+pub const MacroRule = struct {
+    matchers: []MacroMatcher, // 匹配模式序列
+    body: Expression, // 宏展开体 (通常是 BlockExpression)
+    span: Span,
+};
+
+pub const MacroDeclaration = struct {
+    name: SymbolId,
+    visibility: Visibility,
+    rules: []MacroRule,
+    span: Span,
+};
+
+/// 模块 (Module) - AST 的根节点
+pub const Module = struct {
+    declarations: []Declaration,
+};
