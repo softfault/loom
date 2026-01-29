@@ -4,6 +4,14 @@ const TokenType = @import("token.zig").TokenType;
 const Span = @import("utils.zig").Span;
 const SymbolId = @import("utils.zig").SymbolId;
 
+pub const NodeId = enum(u32) {
+    _,
+
+    pub fn toUsize(self: NodeId) usize {
+        return @intFromEnum(self);
+    }
+};
+
 /// 二元运算符
 pub const BinaryOperator = enum {
     // 算术
@@ -146,7 +154,7 @@ pub const Expression = union(enum) {
     ArrayType: *ArrayTypeExpression, // [N]T
     OptionalType: *OptionalTypeExpression, // ?T
     FunctionType: *FunctionTypeExpression, // fn(i32) i32
-    NeverType: Span,
+    NeverType: *NeverTypeExpression, // !
 
     /// 获取表达式的 Span
     pub fn span(self: Expression) Span {
@@ -175,7 +183,38 @@ pub const Expression = union(enum) {
             .ArrayType => |v| v.span,
             .OptionalType => |v| v.span,
             .FunctionType => |v| v.span,
-            .NeverType => |s| s,
+            .NeverType => |v| v.span,
+        };
+    }
+
+    /// 获取表达式的ID
+    pub fn id(self: Expression) NodeId {
+        return switch (self) {
+            .Literal => |v| v.id,
+            .Identifier => |v| v.id,
+            .Binary => |v| v.id,
+            .Unary => |v| v.id,
+            .Assignment => |v| v.id,
+            .FunctionCall => |v| v.id,
+            .GenericInstantiation => |v| v.id,
+            .MemberAccess => |v| v.id,
+            .IndexAccess => |v| v.id,
+            .ImportGroup => |v| v.id,
+            .Propagate => |v| v.id,
+            .MacroCall => |v| v.id,
+            .StructInitialization => |v| v.id,
+            .ArrayInitialization => |v| v.id,
+            .TupleInitialization => |v| v.id,
+            .Range => |v| v.id,
+            .If => |v| v.id,
+            .Match => |v| v.id,
+            .Block => |v| v.id,
+            .PointerType => |v| v.id,
+            .SliceType => |v| v.id,
+            .ArrayType => |v| v.id,
+            .OptionalType => |v| v.id,
+            .FunctionType => |v| v.id,
+            .NeverType => |v| v.id,
         };
     }
 };
@@ -193,17 +232,20 @@ pub const Literal = struct {
         Null,
         Unreachable,
     };
+    id: NodeId,
     kind: Kind,
     value: SymbolId, // 存储字符串化的值，留待语义分析阶段解析为数字
     span: Span,
 };
 
 pub const Identifier = struct {
+    id: NodeId,
     name: SymbolId,
     span: Span,
 };
 
 pub const BinaryExpression = struct {
+    id: NodeId,
     operator: BinaryOperator,
     left: Expression,
     right: Expression,
@@ -211,12 +253,14 @@ pub const BinaryExpression = struct {
 };
 
 pub const UnaryExpression = struct {
+    id: NodeId,
     operator: UnaryOperator,
     operand: Expression,
     span: Span,
 };
 
 pub const AssignmentExpression = struct {
+    id: NodeId,
     operator: AssignmentOperator,
     target: Expression, // 左值 (L-Value)
     value: Expression, // 右值 (R-Value)
@@ -224,12 +268,14 @@ pub const AssignmentExpression = struct {
 };
 
 pub const FunctionCallExpression = struct {
+    id: NodeId,
     callee: Expression, // 被调用的对象 (函数名、泛型类型名、函数指针等)
     arguments: []CallArgument,
     span: Span,
 };
 
 pub const CallArgument = struct {
+    id: NodeId,
     name: ?SymbolId, // 如果是位置参数则为 null，如果是命名参数则为名字
     value: Expression,
     span: Span,
@@ -238,18 +284,21 @@ pub const CallArgument = struct {
 /// 泛型实例化表达式
 /// 涵盖: Type<Args> (如 List<i32>) 和 Expr.<Args> (如 parse.<i32>)
 pub const GenericInstantiationExpression = struct {
+    id: NodeId,
     base: Expression, // 左边的部分，如 List 或 parse
     arguments: []Expression, // <...> 里面的参数，通常是类型表达式
     span: Span,
 };
 
 pub const MemberAccessExpression = struct {
+    id: NodeId,
     object: Expression,
     member_name: SymbolId,
     span: Span,
 };
 
 pub const IndexAccessExpression = struct {
+    id: NodeId,
     collection: Expression, // 数组、切片
     index: Expression, // 索引值
     span: Span,
@@ -258,12 +307,14 @@ pub const IndexAccessExpression = struct {
 /// 解包表达式
 /// 对应语法: expression.?
 pub const UnwrapExpression = struct {
+    id: NodeId,
     operand: Expression,
     span: Span,
 };
 /// 传播表达式
 /// result?
 pub const PropagateExpression = struct {
+    id: NodeId,
     operand: Expression,
     span: Span,
 };
@@ -271,6 +322,7 @@ pub const PropagateExpression = struct {
 /// 宏调用表达式
 /// 例如: vec![1, 2, 3] 或 std.debug.print!("fmt")
 pub const MacroCallExpression = struct {
+    id: NodeId,
     /// 被调用的宏 (通常是 Identifier 或 MemberAccess)
     /// 例如: "vec" 或 "std.debug.print"
     callee: Expression,
@@ -285,12 +337,14 @@ pub const MacroCallExpression = struct {
 
 // 导入组定义
 pub const ImportGroupExpression = struct {
+    id: NodeId,
     parent: Expression, // std.debug
     sub_paths: []Expression, // [print, assert] (通常是 Identifier，但也允许子路径)
     span: Span,
 };
 
 pub const StructInitializationExpression = struct {
+    id: NodeId,
     // 可能是 null (如果是匿名结构体或上下文推导)
     // 对于 `Point { x: 1 }`, 这里是 `Identifier(Point)`
     type_expression: ?Expression,
@@ -299,12 +353,14 @@ pub const StructInitializationExpression = struct {
 };
 
 pub const StructFieldInit = struct {
+    id: NodeId,
     name: SymbolId,
     value: Expression,
     span: Span,
 };
 
 pub const ArrayInitializationExpression = struct {
+    id: NodeId,
     elements: []Expression,
     // 如果是 [0; 1024] 这种语法
     repeat_count: ?Expression,
@@ -312,11 +368,13 @@ pub const ArrayInitializationExpression = struct {
 };
 
 pub const TupleInitializationExpression = struct {
+    id: NodeId,
     elements: []Expression,
     span: Span,
 };
 
 pub const RangeExpression = struct {
+    id: NodeId,
     start: ?Expression, // null 表示 ..5 中的 start (0)
     end: ?Expression, // null 表示 1.. 中的 end (len)
     is_inclusive: bool,
@@ -324,6 +382,7 @@ pub const RangeExpression = struct {
 };
 
 pub const IfExpression = struct {
+    id: NodeId,
     condition: Expression,
     then_branch: Expression,
     else_branch: ?Expression, // 可能是 BlockExpression 或另一个 IfExpression (else if)
@@ -331,18 +390,21 @@ pub const IfExpression = struct {
 };
 
 pub const MatchExpression = struct {
+    id: NodeId,
     target: Expression,
     arms: []MatchArm,
     span: Span,
 };
 
 pub const MatchArm = struct {
+    id: NodeId,
     pattern: Pattern,
     body: Expression,
     span: Span,
 };
 
 pub const BlockExpression = struct {
+    id: NodeId,
     statements: []Statement,
     // 块的最后一个表达式作为返回值。如果为空，则返回 unit
     result_expression: ?Expression,
@@ -352,6 +414,7 @@ pub const BlockExpression = struct {
 // --- 类型构造表达式 ---
 
 pub const PointerTypeExpression = struct {
+    id: NodeId,
     is_mutable: bool, // true: &mut T / *mut T
     is_volatile: bool, // true: *T (驱动开发用)
     child_type: Expression, // 指向的类型
@@ -359,11 +422,13 @@ pub const PointerTypeExpression = struct {
 };
 
 pub const SliceTypeExpression = struct {
+    id: NodeId,
     child_type: Expression, // []T 中的 T
     span: Span,
 };
 
 pub const ArrayTypeExpression = struct {
+    id: NodeId,
     size: Expression, // [N]T 中的 N (必须是编译期常量)
     child_type: Expression, // [N]T 中的 T
     span: Span,
@@ -371,6 +436,7 @@ pub const ArrayTypeExpression = struct {
 
 /// 可选类型表达式 ?T
 pub const OptionalTypeExpression = struct {
+    id: NodeId,
     child_type: Expression,
     span: Span,
 };
@@ -378,16 +444,22 @@ pub const OptionalTypeExpression = struct {
 /// 函数类型表达式
 /// 例如: fn(i32, i32) i32
 pub const FunctionTypeExpression = struct {
+    id: NodeId,
     parameters: []Expression, // 参数类型列表
     return_type: ?Expression, // 返回值类型 (null 表示 unit)
     is_variadic: bool, // 是否包含 ... (C FFI)
     span: Span,
 };
 
+pub const NeverTypeExpression = struct {
+    id: NodeId,
+    span: Span,
+};
+
 /// 模式 (Pattern)
 /// 用于 `let`, `match`, 函数参数解构
 pub const Pattern = union(enum) {
-    Wildcard: Span, // _
+    Wildcard: WildcardPattern, // _
     Literal: Literal, // 1, "abc", true
     IdentifierBinding: IdentifierBindingPattern, // x, mut x
     StructDestructuring: StructDestructuringPattern, // Point { x, y }
@@ -397,7 +469,7 @@ pub const Pattern = union(enum) {
 
     pub fn span(self: Pattern) Span {
         return switch (self) {
-            .Wildcard => |s| s,
+            .Wildcard => |v| v.span,
             .Literal => |v| v.span,
             .IdentifierBinding => |v| v.span,
             .StructDestructuring => |v| v.span,
@@ -406,15 +478,29 @@ pub const Pattern = union(enum) {
             .Range => |v| v.span,
         };
     }
+
+    pub fn id(self: Pattern) NodeId {
+        return switch (self) {
+            .Wildcard => |v| v.id,
+            .Literal => |v| v.id,
+            .IdentifierBinding => |v| v.id,
+            .StructDestructuring => |v| v.id,
+            .TupleDestructuring => |v| v.id,
+            .EnumMatching => |v| v.id,
+            .Range => |v| v.id,
+        };
+    }
 };
 
 pub const IdentifierBindingPattern = struct {
+    id: NodeId,
     name: SymbolId,
     is_mutable: bool, // let mut x = ...
     span: Span,
 };
 
 pub const StructDestructuringPattern = struct {
+    id: NodeId,
     type_expression: ?Expression, // Point { ... }
     fields: []PatternStructField,
     ignore_remaining: bool,
@@ -422,17 +508,25 @@ pub const StructDestructuringPattern = struct {
 };
 
 pub const PatternStructField = struct {
+    id: NodeId,
     field_name: SymbolId,
     pattern: Pattern, // field: pattern
     span: Span,
 };
 
+pub const WildcardPattern = struct {
+    id: NodeId,
+    span: Span,
+};
+
 pub const TupleDestructuringPattern = struct {
+    id: NodeId,
     elements: []Pattern,
     span: Span,
 };
 
 pub const EnumMatchingPattern = struct {
+    id: NodeId,
     variant_name: SymbolId, // Ok
     type_context: ?Expression, // Result.Ok 中的 Result (可选，如果是 .Ok)
     payloads: []Pattern, // Ok(v) 中的 v
@@ -441,6 +535,7 @@ pub const EnumMatchingPattern = struct {
 
 // pattern 出现在enum中要求是字面量
 pub const RangePattern = struct {
+    id: NodeId,
     start: Literal,
     end: Literal,
     is_inclusive: bool,
@@ -477,6 +572,7 @@ pub const Statement = union(enum) {
 };
 
 pub const LetStatement = struct {
+    id: NodeId,
     pattern: Pattern,
     type_annotation: ?Expression, // : T
     value: Expression,
@@ -484,6 +580,7 @@ pub const LetStatement = struct {
 };
 
 pub const ConstStatement = struct {
+    id: NodeId,
     name: SymbolId, // const 通常必须显式命名，不能解构太复杂
     type_annotation: ?Expression,
     value: Expression,
@@ -491,6 +588,7 @@ pub const ConstStatement = struct {
 };
 
 pub const ForStatement = struct {
+    id: NodeId,
     // 三段式: for init; condition; post
     initializer: ?*Statement, // var i = 0
     condition: ?Expression, // i < 10
@@ -500,19 +598,23 @@ pub const ForStatement = struct {
 };
 
 pub const BreakStatement = struct {
+    id: NodeId,
     span: Span,
 };
 
 pub const ContinueStatement = struct {
+    id: NodeId,
     span: Span,
 };
 
 pub const ReturnStatement = struct {
+    id: NodeId,
     value: ?Expression,
     span: Span,
 };
 
 pub const DeferStatement = struct {
+    id: NodeId,
     target: Expression, // defer expression (通常是 block 或 call)
     span: Span,
 };
@@ -549,9 +651,26 @@ pub const Declaration = union(enum) {
             .GlobalVar => |v| v.span,
         };
     }
+
+    pub fn id(self: Declaration) NodeId {
+        return switch (self) {
+            .Function => |v| v.id,
+            .Struct => |v| v.id,
+            .Enum => |v| v.id,
+            .Union => |v| v.id,
+            .Trait => |v| v.id,
+            .Implementation => |v| v.id,
+            .Macro => |v| v.id,
+            .Use => |v| v.id,
+            .ExternBlock => |v| v.id,
+            .TypeAlias => |v| v.id,
+            .GlobalVar => |v| v.id,
+        };
+    }
 };
 
 pub const FunctionDeclaration = struct {
+    id: NodeId,
     name: SymbolId,
     visibility: Visibility,
     generics: []GenericParameter,
@@ -568,6 +687,7 @@ pub const Visibility = enum {
 };
 
 pub const GenericParameter = struct {
+    id: NodeId,
     name: SymbolId,
     constraints: []Expression,
     default_value: ?Expression,
@@ -575,6 +695,7 @@ pub const GenericParameter = struct {
 };
 
 pub const FunctionParameter = struct {
+    id: NodeId,
     name: SymbolId,
     type_expression: Expression,
     default_value: ?Expression, // a: i32 = 0
@@ -587,6 +708,7 @@ pub const FunctionParameter = struct {
 };
 
 pub const StructDeclaration = struct {
+    id: NodeId,
     name: SymbolId,
     visibility: Visibility,
     generics: []GenericParameter, // struct Point(T: Any)
@@ -601,6 +723,7 @@ pub const StructDeclaration = struct {
 };
 
 pub const StructFieldDeclaration = struct {
+    id: NodeId,
     name: SymbolId,
     visibility: Visibility,
     type_expression: Expression,
@@ -609,6 +732,7 @@ pub const StructFieldDeclaration = struct {
 };
 
 pub const EnumDeclaration = struct {
+    id: NodeId,
     name: SymbolId,
     visibility: Visibility,
     generics: []GenericParameter,
@@ -618,6 +742,7 @@ pub const EnumDeclaration = struct {
 };
 
 pub const EnumVariant = struct {
+    id: NodeId,
     name: SymbolId,
     // 枚举变体可以是：
     // 1. Unit (Quit)
@@ -634,6 +759,7 @@ pub const EnumVariant = struct {
 };
 
 pub const UnionDeclaration = struct {
+    id: NodeId,
     name: SymbolId,
     visibility: Visibility,
     generics: []GenericParameter,
@@ -642,12 +768,14 @@ pub const UnionDeclaration = struct {
 };
 
 pub const UnionVariant = struct {
+    id: NodeId,
     name: SymbolId,
     type_expression: Expression,
     span: Span,
 };
 
 pub const TraitDeclaration = struct {
+    id: NodeId,
     name: SymbolId,
     visibility: Visibility,
     generics: []GenericParameter,
@@ -656,9 +784,8 @@ pub const TraitDeclaration = struct {
     span: Span,
 };
 
-// ast.zig
-
 pub const ImplementationDeclaration = struct {
+    id: NodeId,
     // impl<T> 的泛型参数
     generics: []GenericParameter,
 
@@ -673,6 +800,7 @@ pub const ImplementationDeclaration = struct {
 };
 
 pub const UseDeclaration = struct {
+    id: NodeId,
     visibility: Visibility,
     path: Expression, // std.debug.print (MemberAccess链)
     alias: ?SymbolId, // as P
@@ -682,6 +810,7 @@ pub const UseDeclaration = struct {
 };
 
 pub const ExternBlockDeclaration = struct {
+    id: NodeId,
     // extern { ... }
     declarations: []Declaration,
     span: Span,
@@ -689,6 +818,7 @@ pub const ExternBlockDeclaration = struct {
 
 // 类型别名定义
 pub const TypeAliasDeclaration = struct {
+    id: NodeId,
     name: SymbolId,
     visibility: Visibility,
     generics: []GenericParameter, // 支持 type Callback<T> = fn(T) void;
@@ -698,6 +828,7 @@ pub const TypeAliasDeclaration = struct {
 
 // 全局变量定义
 pub const GlobalVarDeclaration = struct {
+    id: NodeId,
     kind: GlobalVarKind,
     visibility: Visibility,
     name: SymbolId,
@@ -751,12 +882,14 @@ pub const MacroRepetitionOp = enum {
 };
 
 pub const MacroRule = struct {
+    id: NodeId,
     matchers: []MacroMatcher, // 匹配模式序列
     body: []const Token,
     span: Span,
 };
 
 pub const MacroDeclaration = struct {
+    id: NodeId,
     name: SymbolId,
     visibility: Visibility,
     rules: []MacroRule,

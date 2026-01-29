@@ -7,6 +7,7 @@ const SymbolId = @import("utils.zig").SymbolId;
 const ast = @import("ast.zig");
 const Span = @import("utils.zig").Span;
 const Context = @import("context.zig").Context;
+const NodeId = @import("ast.zig").NodeId;
 
 /// 显式定义的错误集合
 /// 用于打破递归函数的错误推导循环 (Error Set Inference Loop)
@@ -62,6 +63,9 @@ pub const Parser = struct {
     /// 4. 状态标记
     panic_mode: bool = false, // 用于错误恢复 (Synchronization)
 
+    /// 5. ID 计数器
+    next_node_id: u32 = 0,
+
     pub fn init(
         allocator: std.mem.Allocator, // 传入通用分配器 (如 GPA)
         stream: TokenStream,
@@ -94,6 +98,13 @@ pub const Parser = struct {
     /// 在 Arena 上分配一个切片 (比如参数列表)
     pub fn allocList(self: *Parser, comptime T: type, capacity: usize) ![]T {
         return self.ast_arena.allocator().alloc(T, capacity);
+    }
+
+    // 辅助函数：生成新 ID
+    fn newId(self: *Parser) NodeId {
+        const id = self.next_node_id;
+        self.next_node_id += 1;
+        return @enumFromInt(id);
     }
 
     // ==========================================
@@ -322,6 +333,7 @@ pub const Parser = struct {
         const token = try self.expect(.Identifier);
         const sym_id = try self.internToken(token);
         return ast.Identifier{
+            .id = self.newId(),
             .name = sym_id,
             .span = token.span,
         };
@@ -416,6 +428,7 @@ pub const Parser = struct {
             // 1. 错误传播/Try: val.?
             .DotQuestion => {
                 const prop = try self.create(ast.PropagateExpression, .{
+                    .id = self.newId(),
                     .operand = lhs,
                     .span = lhs.span().merge(self.stream.prev_token_span),
                 });
@@ -425,6 +438,7 @@ pub const Parser = struct {
             // 2. 解引用: val.*
             .DotStar => {
                 const deref = try self.create(ast.UnaryExpression, .{
+                    .id = self.newId(),
                     .operator = .Dereference,
                     .operand = lhs,
                     .span = lhs.span().merge(self.stream.prev_token_span),
@@ -439,6 +453,7 @@ pub const Parser = struct {
                 // 此时 current 已经在 > 后面，prev_token_span 是 >
 
                 const gen_expr = try self.create(ast.GenericInstantiationExpression, .{
+                    .id = self.newId(),
                     .base = lhs,
                     .arguments = args,
                     .span = lhs.span().merge(self.stream.prev_token_span),
@@ -451,6 +466,7 @@ pub const Parser = struct {
                 const args = try self.parseCallArguments();
 
                 const call_expr = try self.create(ast.FunctionCallExpression, .{
+                    .id = self.newId(),
                     .callee = lhs,
                     .arguments = args,
                     .span = lhs.span().merge(self.stream.prev_token_span),
@@ -464,6 +480,7 @@ pub const Parser = struct {
                 const end_token = try self.expect(.RBracket);
 
                 const index_expr = try self.create(ast.IndexAccessExpression, .{
+                    .id = self.newId(),
                     .collection = lhs,
                     .index = index,
                     .span = lhs.span().merge(end_token.span),
@@ -477,6 +494,7 @@ pub const Parser = struct {
                 const sym = try self.internToken(name_token);
 
                 const member_expr = try self.create(ast.MemberAccessExpression, .{
+                    .id = self.newId(),
                     .object = lhs,
                     .member_name = sym,
                     .span = lhs.span().merge(name_token.span),
@@ -494,6 +512,7 @@ pub const Parser = struct {
 
                 // 2. 构造 AST
                 const macro_node = try self.create(ast.MacroCallExpression, .{
+                    .id = self.newId(),
                     .callee = lhs, // 左边的表达式直接作为 callee
                     .arguments = args,
                     .span = lhs.span().merge(end_span),
@@ -520,6 +539,7 @@ pub const Parser = struct {
                 const end_span = if (rhs) |r| r.span() else self.stream.prev_token_span;
 
                 const range_node = try self.create(ast.RangeExpression, .{
+                    .id = self.newId(),
                     .start = lhs,
                     .end = rhs,
                     .is_inclusive = is_inclusive, // 传入标志
@@ -551,10 +571,11 @@ pub const Parser = struct {
                         value_expr = try self.parseExpression(.Lowest);
                     } else {
                         // 简写模式: field (等同于 field: field)
-                        value_expr = .{ .Identifier = .{ .name = name_sym, .span = name_tok.span } };
+                        value_expr = .{ .Identifier = .{ .id = self.newId(), .name = name_sym, .span = name_tok.span } };
                     }
 
                     try fields.append(allocator, .{
+                        .id = self.newId(),
                         .name = name_sym,
                         .value = value_expr,
                         .span = name_tok.span.merge(value_expr.span()),
@@ -569,6 +590,7 @@ pub const Parser = struct {
 
                 // 创建 AST 节点
                 const node = try self.create(ast.StructInitializationExpression, .{
+                    .id = self.newId(),
                     .type_expression = lhs, // 左边的表达式 (如 List.<i32>) 就是类型
                     .fields = try fields.toOwnedSlice(allocator),
                     .span = lhs.span().merge(end_brace.span),
@@ -610,6 +632,7 @@ pub const Parser = struct {
         if (is_right_associative and op == .Assign) {
             // 纯赋值 =
             const assign_expr = try self.create(ast.AssignmentExpression, .{
+                .id = self.newId(),
                 .operator = .Assign,
                 .target = lhs, // 左值检查通常放在语义分析阶段
                 .value = rhs,
@@ -621,6 +644,7 @@ pub const Parser = struct {
             // 需要把 TokenType 转换为 AssignmentOperator
             const assign_op = ast.AssignmentOperator.fromToken(op);
             const assign_expr = try self.create(ast.AssignmentExpression, .{
+                .id = self.newId(),
                 .operator = assign_op,
                 .target = lhs,
                 .value = rhs,
@@ -630,6 +654,7 @@ pub const Parser = struct {
         } else {
             // 普通二元运算 + - * /
             const bin_expr = try self.create(ast.BinaryExpression, .{
+                .id = self.newId(),
                 .operator = ast.BinaryOperator.fromToken(op),
                 .left = lhs,
                 .right = rhs,
@@ -658,38 +683,38 @@ pub const Parser = struct {
                     .CharLiteral => .Character,
                     else => unreachable,
                 };
-                return .{ .Literal = .{ .kind = kind, .value = sym, .span = tok.span } };
+                return .{ .Literal = .{ .id = self.newId(), .kind = kind, .value = sym, .span = tok.span } };
             },
 
             .StringLiteral => {
                 const tok = self.advance();
                 const sym = try self.parseStringLiteral(tok);
-                return .{ .Literal = .{ .kind = .String, .value = sym, .span = tok.span } };
+                return .{ .Literal = .{ .id = self.newId(), .kind = .String, .value = sym, .span = tok.span } };
             },
 
             .True, .False => {
                 const tok = self.advance();
                 const sym = try self.internToken(tok);
-                return .{ .Literal = .{ .kind = .Boolean, .value = sym, .span = tok.span } };
+                return .{ .Literal = .{ .id = self.newId(), .kind = .Boolean, .value = sym, .span = tok.span } };
             },
 
             .Undef => {
                 const tok = self.advance();
                 const sym = try self.internToken(tok);
-                return .{ .Literal = .{ .kind = .Undef, .value = sym, .span = tok.span } };
+                return .{ .Literal = .{ .id = self.newId(), .kind = .Undef, .value = sym, .span = tok.span } };
             },
 
             .Unreach => {
                 const tok = self.advance();
                 const sym = try self.internToken(tok);
-                return .{ .Literal = .{ .kind = .Unreachable, .value = sym, .span = tok.span } };
+                return .{ .Literal = .{ .id = self.newId(), .kind = .Unreachable, .value = sym, .span = tok.span } };
             },
 
             // === 2. 标识符 & 结构体初始化 ===
             .Identifier => {
                 const tok = self.advance();
                 const sym = try self.internToken(tok);
-                const ident_expr: ast.Expression = .{ .Identifier = .{ .name = sym, .span = tok.span } };
+                const ident_expr: ast.Expression = .{ .Identifier = .{ .id = self.newId(), .name = sym, .span = tok.span } };
 
                 // 检查是否是结构体初始化: Ident { ... }
                 // 如果后面紧跟 `{`，且 `{` 后面紧跟 `Ident :` 或 `Ident ,` 或 `Ident }` (简写) 或 `}` (空)，
@@ -727,6 +752,7 @@ pub const Parser = struct {
                     // 分配一个空切片
                     const empty_elements = try self.allocList(ast.Expression, 0);
                     const tuple_expr = try self.create(ast.TupleInitializationExpression, .{
+                        .id = self.newId(),
                         .elements = empty_elements,
                         .span = start_token.span.merge(end_token.span),
                     });
@@ -750,6 +776,7 @@ pub const Parser = struct {
                     const end_token = try self.expect(.RParen);
 
                     const tuple_expr = try self.create(ast.TupleInitializationExpression, .{
+                        .id = self.newId(),
                         .elements = try elements.toOwnedSlice(allocator),
                         .span = start_token.span.merge(end_token.span),
                     });
@@ -780,6 +807,7 @@ pub const Parser = struct {
                 };
 
                 const unary = try self.create(ast.UnaryExpression, .{
+                    .id = self.newId(),
                     .operator = op,
                     .operand = right,
                     .span = op_token.span.merge(right.span()),
@@ -797,6 +825,7 @@ pub const Parser = struct {
                 if (self.match(&.{.Mut})) {
                     const sub_type = try self.parseExpression(.Prefix);
                     const ptr_type = try self.create(ast.PointerTypeExpression, .{
+                        .id = self.newId(),
                         .is_mutable = true,
                         .is_volatile = false,
                         .child_type = sub_type,
@@ -810,6 +839,7 @@ pub const Parser = struct {
 
                 const right = try self.parseExpression(.Prefix);
                 const unary = try self.create(ast.UnaryExpression, .{
+                    .id = self.newId(),
                     .operator = .AddressOf,
                     .operand = right,
                     .span = start_token.span.merge(right.span()),
@@ -825,6 +855,7 @@ pub const Parser = struct {
                 const sub_type = try self.parseExpression(.Prefix);
 
                 const ptr_type = try self.create(ast.PointerTypeExpression, .{
+                    .id = self.newId(),
                     .is_mutable = is_mut,
                     .is_volatile = true, // * 号表示 volatile
                     .child_type = sub_type,
@@ -844,6 +875,7 @@ pub const Parser = struct {
                     const child_type = try self.parseExpression(.Prefix);
 
                     const slice_type = try self.create(ast.SliceTypeExpression, .{
+                        .id = self.newId(),
                         .child_type = child_type,
                         .span = start_token.span.merge(child_type.span()),
                     });
@@ -859,6 +891,7 @@ pub const Parser = struct {
                     const end_token = try self.expect(.RBracket);
 
                     const array_init = try self.create(ast.ArrayInitializationExpression, .{
+                        .id = self.newId(),
                         .elements = try self.singleElementSlice(first_expr),
                         .repeat_count = count_expr,
                         .span = start_token.span.merge(end_token.span),
@@ -880,6 +913,7 @@ pub const Parser = struct {
                     const end_token = try self.expect(.RBracket);
 
                     const array_init = try self.create(ast.ArrayInitializationExpression, .{
+                        .id = self.newId(),
                         .elements = try elements.toOwnedSlice(allocator),
                         .repeat_count = null,
                         .span = start_token.span.merge(end_token.span),
@@ -899,6 +933,7 @@ pub const Parser = struct {
                     if (isTypeStart(self.peek())) {
                         const child_type = try self.parseExpression(.Prefix);
                         const array_type = try self.create(ast.ArrayTypeExpression, .{
+                            .id = self.newId(),
                             .size = first_expr,
                             .child_type = child_type,
                             .span = start_token.span.merge(child_type.span()),
@@ -908,6 +943,7 @@ pub const Parser = struct {
                         // 下一个符号不像类型 (比如 +, -, /, EOF, ;)
                         // 安全地解析为单元素数组字面量
                         const array_init = try self.create(ast.ArrayInitializationExpression, .{
+                            .id = self.newId(),
                             .elements = try self.singleElementSlice(first_expr),
                             .repeat_count = null,
                             .span = start_token.span.merge(end_token.span),
@@ -936,6 +972,7 @@ pub const Parser = struct {
                 const rhs = try self.parseExpression(.Prefix);
 
                 const range_node = try self.create(ast.RangeExpression, .{
+                    .id = self.newId(),
                     .start = null,
                     .end = rhs,
                     .is_inclusive = is_inclusive,
@@ -994,6 +1031,7 @@ pub const Parser = struct {
                 const arg_span = if (name) |_| start_span.merge(value.span()) else value.span();
 
                 try args.append(allocator, .{
+                    .id = self.newId(),
                     .name = name,
                     .value = value,
                     .span = arg_span,
@@ -1066,7 +1104,7 @@ pub const Parser = struct {
             // 1. 通配符 _
             .Underscore => {
                 const tok = self.advance();
-                return .{ .Wildcard = tok.span };
+                return .{ .Wildcard = .{ .id = self.newId(), .span = tok.span } };
             },
             // 2. 标识符
             .Identifier => return self.parseIdentifierPattern(),
@@ -1089,6 +1127,7 @@ pub const Parser = struct {
 
                     return .{
                         .Range = .{
+                            .id = self.newId(),
                             .start = start_lit,
                             .end = end_lit,
                             .is_inclusive = is_inclusive, // 传入标志
@@ -1112,6 +1151,7 @@ pub const Parser = struct {
                 const end = try self.expect(.RParen);
 
                 return .{ .TupleDestructuring = .{
+                    .id = self.newId(),
                     .elements = try elements.toOwnedSlice(allocator),
                     .span = start.span.merge(end.span),
                 } };
@@ -1136,6 +1176,7 @@ pub const Parser = struct {
                 // 这里简化处理
                 return .{
                     .EnumMatching = .{
+                        .id = self.newId(),
                         .variant_name = sym,
                         .type_context = null, // .Ok 意味着推导类型
                         .payloads = try payloads.toOwnedSlice(allocator),
@@ -1150,6 +1191,7 @@ pub const Parser = struct {
                 const name_tok = try self.expect(.Identifier);
                 const sym = try self.internToken(name_tok);
                 return .{ .IdentifierBinding = .{
+                    .id = self.newId(),
                     .name = sym,
                     .is_mutable = true,
                     .span = start.span.merge(name_tok.span),
@@ -1174,7 +1216,7 @@ pub const Parser = struct {
         // 初始化当前构建的表达式 (base)
         // 这可能是变量名，也可能是类型名 (Point)，也可能是 Enum 名 (Result)
         // 我们先把它构建在栈上，如果需要升级再移到堆上
-        var current_expr: ast.Expression = .{ .Identifier = .{ .name = start_sym, .span = start_tok.span } };
+        var current_expr: ast.Expression = .{ .Identifier = .{ .id = self.newId(), .name = start_sym, .span = start_tok.span } };
 
         // 1.2 检查泛型参数 <T>
         // 例如: Result<i32> 或 Struct<T>
@@ -1187,6 +1229,7 @@ pub const Parser = struct {
             const base_ptr = try self.create(ast.Expression, current_expr);
 
             const gen_node = try self.create(ast.GenericInstantiationExpression, .{
+                .id = self.newId(),
                 .base = base_ptr.*,
                 .arguments = args,
                 .span = start_tok.span.merge(end_span),
@@ -1223,6 +1266,7 @@ pub const Parser = struct {
             // 构造 EnumMatchingPattern
             // 注意：type_context 就是刚才解析出来的 current_expr (Result<i32>)
             return .{ .EnumMatching = .{
+                .id = self.newId(),
                 .variant_name = variant_sym,
                 .type_context = current_expr,
                 .payloads = try payloads.toOwnedSlice(allocator),
@@ -1276,6 +1320,7 @@ pub const Parser = struct {
                     // 简写: x  =>  x: x (Binding)
                     // 或: mut x => x: mut x
                     sub_pat = .{ .IdentifierBinding = .{
+                        .id = self.newId(),
                         .name = field_sym,
                         .is_mutable = is_field_mut,
                         .span = if (is_field_mut) field_start_span.merge(field_name_tok.span) else field_name_tok.span,
@@ -1283,6 +1328,7 @@ pub const Parser = struct {
                 }
 
                 try fields.append(allocator, .{
+                    .id = self.newId(),
                     .field_name = field_sym,
                     .pattern = sub_pat,
                     .span = field_name_tok.span.merge(sub_pat.span()),
@@ -1295,6 +1341,7 @@ pub const Parser = struct {
 
             return .{
                 .StructDestructuring = .{
+                    .id = self.newId(),
                     .type_expression = current_expr,
                     .fields = try fields.toOwnedSlice(allocator),
                     .ignore_remaining = ignore_remaining, // [AST 已更新]
@@ -1311,6 +1358,7 @@ pub const Parser = struct {
 
         return .{
             .IdentifierBinding = .{
+                .id = self.newId(),
                 .name = start_sym,
                 .is_mutable = false, // 如果是 mut x，是在 parsePattern 入口处理的 Var 分支，不是这里
                 .span = start_tok.span,
@@ -1361,6 +1409,7 @@ pub const Parser = struct {
         const end_span = if (return_type) |r| r.span() else self.stream.prev_token_span;
 
         const node = try self.create(ast.FunctionTypeExpression, .{
+            .id = self.newId(),
             .parameters = try params.toOwnedSlice(allocator),
             .return_type = return_type,
             .is_variadic = is_variadic,
@@ -1402,6 +1451,7 @@ pub const Parser = struct {
 
                 // 构造 GenericInstantiationExpression
                 const node = try self.create(ast.GenericInstantiationExpression, .{
+                    .id = self.newId(),
                     .base = left,
                     .arguments = args,
                     .span = left.span().merge(end_span),
@@ -1417,6 +1467,7 @@ pub const Parser = struct {
                 const sym = try self.internToken(name_tok);
 
                 const node = try self.create(ast.MemberAccessExpression, .{
+                    .id = self.newId(),
                     .object = left,
                     .member_name = sym,
                     .span = left.span().merge(name_tok.span),
@@ -1438,6 +1489,7 @@ pub const Parser = struct {
                 const right = try self.parseType();
 
                 const node = try self.create(ast.RangeExpression, .{
+                    .id = self.newId(),
                     .start = left, // 左侧类型
                     .end = right, // 右侧类型
                     .is_inclusive = is_inclusive,
@@ -1466,7 +1518,7 @@ pub const Parser = struct {
             .Identifier => {
                 const tok = self.advance();
                 const sym = try self.internToken(tok);
-                return .{ .Identifier = .{ .name = sym, .span = tok.span } };
+                return .{ .Identifier = .{ .id = self.newId(), .name = sym, .span = tok.span } };
             },
 
             // 2. 指针 (&T, *T)
@@ -1480,6 +1532,7 @@ pub const Parser = struct {
                 const child = try self.parseType();
 
                 const node = try self.create(ast.PointerTypeExpression, .{
+                    .id = self.newId(),
                     .is_mutable = is_mut,
                     .is_volatile = is_volatile,
                     .child_type = child,
@@ -1496,6 +1549,7 @@ pub const Parser = struct {
                 if (self.match(&.{.RBracket})) {
                     const child = try self.parseType();
                     const node = try self.create(ast.SliceTypeExpression, .{
+                        .id = self.newId(),
                         .child_type = child,
                         .span = start.span.merge(child.span()),
                     });
@@ -1510,6 +1564,7 @@ pub const Parser = struct {
                 const child = try self.parseType();
 
                 const node = try self.create(ast.ArrayTypeExpression, .{
+                    .id = self.newId(),
                     .size = size_expr,
                     .child_type = child,
                     .span = start.span.merge(child.span()),
@@ -1522,6 +1577,7 @@ pub const Parser = struct {
                 const start = self.advance();
                 const child = try self.parseType();
                 const node = try self.create(ast.OptionalTypeExpression, .{
+                    .id = self.newId(),
                     .child_type = child,
                     .span = start.span.merge(child.span()),
                 });
@@ -1536,7 +1592,8 @@ pub const Parser = struct {
             // 6. 不可达类型 (!)
             .Bang => {
                 const tok = self.advance(); // eat '!'
-                return .{ .NeverType = tok.span };
+                const never_node = try self.create(ast.NeverTypeExpression, .{ .id = self.newId(), .span = tok.span });
+                return .{ .NeverType = never_node };
             },
 
             // 7. 元组类型
@@ -1628,6 +1685,7 @@ pub const Parser = struct {
         const end = try self.expect(.Semicolon);
 
         const node = try self.create(ast.LetStatement, .{
+            .id = self.newId(),
             .pattern = pat,
             .type_annotation = type_anno,
             .value = value,
@@ -1646,6 +1704,7 @@ pub const Parser = struct {
         const end = try self.expect(.Semicolon);
 
         const node = try self.create(ast.ReturnStatement, .{
+            .id = self.newId(),
             .value = value,
             .span = start.span.merge(end.span),
         });
@@ -1666,6 +1725,7 @@ pub const Parser = struct {
         const end = try self.expect(.Semicolon);
 
         const node = try self.create(ast.DeferStatement, .{
+            .id = self.newId(),
             .target = target,
             .span = start.span.merge(end.span),
         });
@@ -1676,7 +1736,7 @@ pub const Parser = struct {
         const tok = self.advance(); // eat break
         const end = try self.expect(.Semicolon);
 
-        const node = try self.create(ast.BreakStatement, .{ .span = tok.span.merge(end.span) });
+        const node = try self.create(ast.BreakStatement, .{ .id = self.newId(), .span = tok.span.merge(end.span) });
         return .{ .Break = node };
     }
 
@@ -1684,7 +1744,7 @@ pub const Parser = struct {
         const tok = self.advance(); // eat continue
         const end = try self.expect(.Semicolon);
 
-        const node = try self.create(ast.ContinueStatement, .{ .span = tok.span.merge(end.span) });
+        const node = try self.create(ast.ContinueStatement, .{ .id = self.newId(), .span = tok.span.merge(end.span) });
         return .{ .Continue = node };
     }
 
@@ -1742,6 +1802,7 @@ pub const Parser = struct {
         const end = try self.expect(.RBrace);
 
         const block = try self.create(ast.BlockExpression, .{
+            .id = self.newId(),
             .statements = try stmts.toOwnedSlice(allocator),
             .result_expression = result_expr,
             .span = start.span.merge(end.span),
@@ -1775,6 +1836,7 @@ pub const Parser = struct {
         const end_span = if (else_expr) |e| e.span() else then_expr.span();
 
         const if_node = try self.create(ast.IfExpression, .{
+            .id = self.newId(),
             .condition = condition,
             .then_branch = then_expr,
             .else_branch = else_expr,
@@ -1811,6 +1873,7 @@ pub const Parser = struct {
             _ = self.match(&.{.Comma});
 
             try arms.append(allocator, .{
+                .id = self.newId(),
                 .pattern = pattern,
                 .body = body,
                 .span = pattern.span().merge(body.span()),
@@ -1820,6 +1883,7 @@ pub const Parser = struct {
         const end = try self.expect(.RBrace);
 
         const match_node = try self.create(ast.MatchExpression, .{
+            .id = self.newId(),
             .target = target,
             .arms = try arms.toOwnedSlice(allocator),
             .span = start.span.merge(end.span),
@@ -1880,6 +1944,7 @@ pub const Parser = struct {
         const body_expr = try self.parseBlockExpression();
 
         const node = try self.create(ast.ForStatement, .{
+            .id = self.newId(),
             .initializer = initializer,
             .condition = condition,
             .post_iteration = post,
@@ -1910,10 +1975,11 @@ pub const Parser = struct {
                 value_expr = try self.parseExpression(.Lowest);
             } else {
                 // 简写 field (等同于 field: field)
-                value_expr = .{ .Identifier = .{ .name = name_sym, .span = name_tok.span } };
+                value_expr = .{ .Identifier = .{ .id = self.newId(), .name = name_sym, .span = name_tok.span } };
             }
 
             try fields.append(allocator, .{
+                .id = self.newId(),
                 .name = name_sym,
                 .value = value_expr,
                 .span = name_tok.span.merge(value_expr.span()),
@@ -1925,6 +1991,7 @@ pub const Parser = struct {
         const end_brace = try self.expect(.RBrace);
 
         const node = try self.create(ast.StructInitializationExpression, .{
+            .id = self.newId(),
             .type_expression = type_expr,
             .fields = try fields.toOwnedSlice(allocator),
             .span = type_expr.span().merge(end_brace.span),
@@ -2014,6 +2081,7 @@ pub const Parser = struct {
             }
 
             try params.append(allocator, .{
+                .id = self.newId(),
                 .name = sym,
                 .constraints = try constraints.toOwnedSlice(allocator), // fix: 赋值 slice
                 .default_value = default,
@@ -2084,6 +2152,7 @@ pub const Parser = struct {
                     _ = self.match(&.{.Comma});
 
                     try fields.append(allocator, .{
+                        .id = self.newId(),
                         .name = field_sym,
                         .visibility = member_vis,
                         .type_expression = field_type,
@@ -2103,6 +2172,7 @@ pub const Parser = struct {
         const end = try self.expect(.RBrace);
 
         const node = try self.create(ast.StructDeclaration, .{
+            .id = self.newId(),
             .name = name_sym,
             .visibility = vis,
             .generics = generics,
@@ -2172,6 +2242,7 @@ pub const Parser = struct {
                 }
 
                 try params.append(allocator, .{
+                    .id = self.newId(),
                     .name = param_sym,
                     .type_expression = param_type,
                     .default_value = default,
@@ -2204,6 +2275,7 @@ pub const Parser = struct {
         const end_span = if (body) |b| b.span else (if (return_type) |r| r.span() else name_tok.span);
 
         const node = try self.create(ast.FunctionDeclaration, .{
+            .id = self.newId(),
             .name = name_sym,
             .visibility = vis,
             .generics = generics,
@@ -2251,11 +2323,12 @@ pub const Parser = struct {
         // 构造类型: Self, &Self, or &mut Self
         // 1. 基础类型 Self
         const self_type_sym = try self.context.intern("Self");
-        var type_expr: ast.Expression = .{ .Identifier = .{ .name = self_type_sym, .span = self_span } };
+        var type_expr: ast.Expression = .{ .Identifier = .{ .id = self.newId(), .name = self_type_sym, .span = self_span } };
 
         // 2. 如果是引用，包裹一层 PointerType
         if (is_ref) {
             const ptr_node = try self.create(ast.PointerTypeExpression, .{
+                .id = self.newId(),
                 .is_mutable = is_mut,
                 .is_volatile = false,
                 .child_type = type_expr,
@@ -2265,6 +2338,7 @@ pub const Parser = struct {
         }
 
         try params.append(allocator, .{
+            .id = self.newId(),
             .name = name_sym,
             .type_expression = type_expr,
             .default_value = null,
@@ -2288,16 +2362,16 @@ pub const Parser = struct {
         if (self.match(&.{.Dot})) {
             // 相对路径 .submod
             const sym = try self.context.intern(".");
-            root_expr = .{ .Identifier = .{ .name = sym, .span = self.stream.prev_token_span } };
+            root_expr = .{ .Identifier = .{ .id = self.newId(), .name = sym, .span = self.stream.prev_token_span } };
         } else if (self.match(&.{.DotDot})) {
             // 父级路径 ..utils
             const sym = try self.context.intern("..");
-            root_expr = .{ .Identifier = .{ .name = sym, .span = self.stream.prev_token_span } };
+            root_expr = .{ .Identifier = .{ .id = self.newId(), .name = sym, .span = self.stream.prev_token_span } };
         } else {
             // 绝对路径 std.debug
             const token = try self.expect(.Identifier);
             const sym = try self.internToken(token);
-            root_expr = .{ .Identifier = .{ .name = sym, .span = token.span } };
+            root_expr = .{ .Identifier = .{ .id = self.newId(), .name = sym, .span = token.span } };
         }
 
         // ==========================================
@@ -2327,6 +2401,7 @@ pub const Parser = struct {
                 const group_end = try self.expect(.RBrace);
 
                 const group_node = try self.create(ast.ImportGroupExpression, .{
+                    .id = self.newId(),
                     .parent = current_path,
                     .sub_paths = try members.toOwnedSlice(allocator),
                     .span = current_path.span().merge(group_end.span),
@@ -2341,6 +2416,7 @@ pub const Parser = struct {
             const sym = try self.internToken(token);
 
             const node = try self.create(ast.MemberAccessExpression, .{
+                .id = self.newId(),
                 .object = current_path,
                 .member_name = sym,
                 .span = current_path.span().merge(token.span),
@@ -2362,6 +2438,7 @@ pub const Parser = struct {
         const end = try self.expect(.Semicolon);
 
         const node = try self.create(ast.UseDeclaration, .{
+            .id = self.newId(),
             .visibility = vis,
             .path = current_path,
             .alias = alias,
@@ -2392,6 +2469,7 @@ pub const Parser = struct {
         const end = try self.expect(.Semicolon);
 
         const node = try self.create(ast.TypeAliasDeclaration, .{
+            .id = self.newId(),
             .name = name_sym,
             .visibility = vis,
             .generics = generics,
@@ -2434,6 +2512,7 @@ pub const Parser = struct {
         const end = try self.expect(.Semicolon);
 
         const node = try self.create(ast.GlobalVarDeclaration, .{
+            .id = self.newId(),
             .kind = kind,
             .visibility = vis,
             .name = name_sym, // AST 中已改为 name
@@ -2471,6 +2550,7 @@ pub const Parser = struct {
             _ = self.match(&.{.Comma});
 
             try variants.append(allocator, .{
+                .id = self.newId(),
                 .name = var_sym,
                 .type_expression = type_expr,
                 .span = var_name.span.merge(type_expr.span()),
@@ -2480,6 +2560,7 @@ pub const Parser = struct {
         const end = try self.expect(.RBrace);
 
         const node = try self.create(ast.UnionDeclaration, .{
+            .id = self.newId(),
             .name = name_sym,
             .visibility = vis,
             .generics = generics,
@@ -2546,6 +2627,7 @@ pub const Parser = struct {
                     }
 
                     try fields.append(allocator, .{
+                        .id = self.newId(),
                         .name = field_sym,
                         .visibility = field_vis,
                         .type_expression = field_type,
@@ -2588,6 +2670,7 @@ pub const Parser = struct {
             const full_span = var_name_tok.span.merge(end_span);
 
             try variants.append(allocator, .{
+                .id = self.newId(),
                 .name = var_sym,
                 .kind = kind,
                 .span = full_span,
@@ -2599,6 +2682,7 @@ pub const Parser = struct {
         const end = try self.expect(.RBrace);
 
         const node = try self.create(ast.EnumDeclaration, .{
+            .id = self.newId(),
             .name = name_sym,
             .visibility = vis,
             .generics = generics,
@@ -2672,6 +2756,7 @@ pub const Parser = struct {
         const end = try self.expect(.RBrace);
 
         const node = try self.create(ast.TraitDeclaration, .{
+            .id = self.newId(),
             .name = name_sym,
             .visibility = vis,
             .generics = generics,
@@ -2739,6 +2824,7 @@ pub const Parser = struct {
         const end = try self.expect(.RBrace);
 
         const node = try self.create(ast.ImplementationDeclaration, .{
+            .id = self.newId(),
             .generics = generics,
             .target_type = target_type,
             .trait_interface = trait_interface,
@@ -2773,6 +2859,7 @@ pub const Parser = struct {
         const end = try self.expect(.RBrace);
 
         const node = try self.create(ast.ExternBlockDeclaration, .{
+            .id = self.newId(),
             .declarations = try decls.toOwnedSlice(allocator),
             .span = start.span.merge(end.span),
         });
@@ -2958,6 +3045,7 @@ pub const Parser = struct {
             _ = self.match(&.{ .Semicolon, .Comma });
 
             try rules.append(allocator, .{
+                .id = self.newId(),
                 .matchers = matchers,
                 .body = body_tokens,
                 .span = rule_span,
@@ -2967,6 +3055,7 @@ pub const Parser = struct {
         const end = try self.expect(.RBrace);
 
         const node = try self.create(ast.MacroDeclaration, .{
+            .id = self.newId(),
             .name = name_sym,
             .visibility = vis,
             .rules = try rules.toOwnedSlice(allocator),
