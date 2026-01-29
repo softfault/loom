@@ -386,7 +386,7 @@ pub const Parser = struct {
         }
     };
 
-    fn parseExpressionInternal(self: *Parser, min_precedence: Precedence, allow_struct_init: bool) ParseError!ast.Expression {
+    fn parseExpression(self: *Parser, min_precedence: Precedence) ParseError!ast.Expression {
         var left = try self.parsePrefix();
 
         while (true) {
@@ -396,29 +396,12 @@ pub const Parser = struct {
             if (@intFromEnum(next_prec) <= @intFromEnum(min_precedence)) {
                 break;
             }
-
-            // 结构体初始化限制检查
-            // 如果下一个是 '{' 且当前禁止结构体初始化，则强制停止，将 '{' 留给外层语句（如 if/match）
-            if (peek_token.tag == .LBrace and !allow_struct_init) {
-                break;
-            }
-
             _ = self.advance(); // eat op
+
             left = try self.parseInfix(left, peek_token.tag, next_prec);
         }
 
         return left;
-    }
-
-    // 标准模式：允许所有语法
-    fn parseExpression(self: *Parser, min_precedence: Precedence) ParseError!ast.Expression {
-        return self.parseExpressionInternal(min_precedence, true);
-    }
-
-    // 限制模式：遇到 '{' 立即停止
-    // 用于 if condition, match target, for post-expr 等位置
-    fn parseExpressionNoStruct(self: *Parser, min_precedence: Precedence) ParseError!ast.Expression {
-        return self.parseExpressionInternal(min_precedence, false);
     }
 
     /// 解析中缀表达式
@@ -1767,31 +1750,34 @@ pub const Parser = struct {
     }
 
     fn parseIfExpression(self: *Parser) !ast.Expression {
-        const start = self.advance(); // eat if
-        const condition = try self.parseExpressionNoStruct(.Lowest);
+        const start = self.advance(); // eat 'if'
 
-        // 解析 then block (必须是 Block)
-        // 这里的 parseBlockExpression 返回的是 Expression(Block)，需要转回 *BlockExpression
-        const then_expr = try self.parseBlockExpression();
-        const then_block = then_expr.Block; // 获取指针
+        // 1. 强制左括号
+        _ = try self.expect(.LParen);
 
-        var else_branch: ?ast.Expression = null;
+        // 2. 解析条件 (不再受限制，可以是 Struct 初始化)
+        const condition = try self.parseExpression(.Lowest);
+
+        // 3. 强制右括号
+        _ = try self.expect(.RParen);
+
+        // 4. 解析 then 分支
+        const then_expr = try self.parseExpression(.Lowest);
+
+        // 5. 解析 else 分支
+        var else_expr: ?ast.Expression = null;
         if (self.match(&.{.Else})) {
-            if (self.check(.If)) {
-                // else if ... 递归解析
-                else_branch = try self.parseIfExpression();
-            } else {
-                // else { ... }
-                else_branch = try self.parseBlockExpression();
-            }
+            // 递归解析 expression，这样天然支持 else if (递归调用 parseIfExpression)
+            // 也支持 else { ... } 或 else 0
+            else_expr = try self.parseExpression(.Lowest);
         }
 
-        const end_span = if (else_branch) |e| e.span() else then_block.span;
+        const end_span = if (else_expr) |e| e.span() else then_expr.span();
 
         const if_node = try self.create(ast.IfExpression, .{
             .condition = condition,
-            .then_branch = then_block,
-            .else_branch = else_branch,
+            .then_branch = then_expr,
+            .else_branch = else_expr,
             .span = start.span.merge(end_span),
         });
         return .{ .If = if_node };
@@ -1801,8 +1787,10 @@ pub const Parser = struct {
         const allocator = self.ast_arena.allocator();
         const start = self.advance(); // eat match
 
-        // 1. Target Expression (没有括号)
-        const target = try self.parseExpressionNoStruct(.Lowest);
+        // 1. 强制括号包围 Target
+        _ = try self.expect(.LParen);
+        const target = try self.parseExpression(.Lowest);
+        _ = try self.expect(.RParen);
 
         _ = try self.expect(.LBrace);
         var arms = std.ArrayList(ast.MatchArm).empty;
@@ -1842,6 +1830,9 @@ pub const Parser = struct {
     fn parseForStatement(self: *Parser) !ast.Statement {
         const start = self.advance(); // eat 'for'
 
+        // 1. 强制左括号
+        _ = try self.expect(.LParen);
+
         // === 1. 初始化部分 (Initializer) ===
         var initializer: ?*ast.Statement = null;
 
@@ -1877,11 +1868,13 @@ pub const Parser = struct {
         // === 3. 步进部分 (Post Iteration) ===
         var post: ?ast.Expression = null;
 
-        // 如果不是 {，说明有步进表达式
-        // 步进部分后面紧跟 {，没有分号
-        if (!self.check(.LBrace)) {
-            post = try self.parseExpressionNoStruct(.Lowest);
+        // 只要不是右括号，就解析 Post
+        if (!self.check(.RParen)) {
+            post = try self.parseExpression(.Lowest);
         }
+
+        // 2. 强制右括号
+        _ = try self.expect(.RParen);
 
         // === 4. 循环体 (Body) ===
         const body_expr = try self.parseBlockExpression();
@@ -3192,7 +3185,7 @@ test "Parser: Use Group Import" {
 test "Parser: Strict For Loop" {
     const source =
         \\fn loop() {
-        \\    for let mut i = 0; i < 10; i += 1 {
+        \\    for (let mut i = 0; i < 10; i += 1) {
         \\        continue;
         \\    }
         \\}
@@ -3331,7 +3324,7 @@ test "Parser: Inclusive Range" {
         \\    let r = 0..=255; 
         \\
         \\    // 2. Range 作为模式 (Pattern)
-        \\    match x {
+        \\    match (x) {
         \\        'a'..='z' => {},
         \\        _ => {}
         \\    }

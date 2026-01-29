@@ -325,7 +325,7 @@ pub const RangeExpression = struct {
 
 pub const IfExpression = struct {
     condition: Expression,
-    then_branch: *BlockExpression,
+    then_branch: Expression,
     else_branch: ?Expression, // 可能是 BlockExpression 或另一个 IfExpression (else if)
     span: Span,
 };
