@@ -31,7 +31,6 @@ struct ArrayList<T> {
     }
 }
 
-
 impl <T> ArrayList<T> {
     pub fn deinit(self) {
         self.allocator.free(self._ptr as ?*mut u8);

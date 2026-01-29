@@ -27,6 +27,7 @@ pub const ParseErrorTag = enum {
     UnterminatedString,
     InvalidEscapeSequence,
     ExpectedSemicolon,
+    ExpectedType,
     // ...
 
     /// 将 Tag 转换为人类可读的格式化字符串模板
@@ -41,6 +42,7 @@ pub const ParseErrorTag = enum {
             .UnterminatedString => allocator.dupe(u8, "Unterminated string literal"),
             .InvalidEscapeSequence => allocator.dupe(u8, "Invalid escape sequence"),
             .ExpectedSemicolon => allocator.dupe(u8, "Expect semicolon"),
+            .ExpectedType => allocator.dupe(u8, "Expected a Type"),
         };
     }
 };
@@ -329,6 +331,7 @@ pub const Parser = struct {
     const Precedence = enum(u8) {
         Lowest,
         Assignment, // = += -=
+        Range, // ..
         LogicalOr, // or
         LogicalAnd, // and
         Equality, // == !=
@@ -352,7 +355,9 @@ pub const Parser = struct {
             return switch (tag) {
                 .PlusAssign, .MinusAssign, .StarAssign, .SlashAssign, .PercentAssign, .AmpersandAssign, .PipeAssign, .CaretAssign, .LShiftAssign, .RShiftAssign => .Assignment,
 
-                .Or => .LogicalOr,
+                .DotDot, .DotDotEqual => .Range,
+
+                .Or, .Question => .LogicalOr,
                 .And => .LogicalAnd,
 
                 .Equal, .NotEqual => .Equality,
@@ -370,10 +375,10 @@ pub const Parser = struct {
                 .Bang,
                 .LParen,
                 .LBracket,
-                .Question,
                 .DotQuestion, // .?
-                .DotAmpersand, // .&
+                .DotStar, // .*
                 .DotLessThan, // .<
+                .LBrace,
                 => .Call,
 
                 else => .Lowest,
@@ -381,36 +386,39 @@ pub const Parser = struct {
         }
     };
 
-    // inside Parser struct
-
-    /// Pratt Parser 核心循环
-    /// min_bp: 当前上下文的最小约束力
-    fn parseExpression(self: *Parser, min_precedence: Precedence) ParseError!ast.Expression {
-        // 1. 前缀部分 (Prefix / Nud)
-        // 这里的逻辑通常不需要优先级判断，或者只需要处理 Prefix 层级
+    fn parseExpressionInternal(self: *Parser, min_precedence: Precedence, allow_struct_init: bool) ParseError!ast.Expression {
         var left = try self.parsePrefix();
 
         while (true) {
             const peek_token = self.peek();
-
-            // 2. 获取下一个运算符的优先级
-            // 如果遇到 EOF 或分号，优先级会自动是 .Lowest，循环终止
             const next_prec = Precedence.getTokenPrecedence(peek_token.tag);
 
-            // [核心判断]
-            // 如果下一个运算符的优先级 < 当前限制，停止延伸
-            // 比如我们正在解析 * (Factor)，后面遇到了 + (Term)
-            // Term < Factor，所以 * 先运算，停止吃后面的 +
             if (@intFromEnum(next_prec) <= @intFromEnum(min_precedence)) {
                 break;
             }
 
-            // 3. 中缀部分 (Infix / Led)
-            _ = self.advance(); // 吃掉运算符 (+, *, etc.)
+            // 结构体初始化限制检查
+            // 如果下一个是 '{' 且当前禁止结构体初始化，则强制停止，将 '{' 留给外层语句（如 if/match）
+            if (peek_token.tag == .LBrace and !allow_struct_init) {
+                break;
+            }
+
+            _ = self.advance(); // eat op
             left = try self.parseInfix(left, peek_token.tag, next_prec);
         }
 
         return left;
+    }
+
+    // 标准模式：允许所有语法
+    fn parseExpression(self: *Parser, min_precedence: Precedence) ParseError!ast.Expression {
+        return self.parseExpressionInternal(min_precedence, true);
+    }
+
+    // 限制模式：遇到 '{' 立即停止
+    // 用于 if condition, match target, for post-expr 等位置
+    fn parseExpressionNoStruct(self: *Parser, min_precedence: Precedence) ParseError!ast.Expression {
+        return self.parseExpressionInternal(min_precedence, false);
     }
 
     /// 解析中缀表达式
@@ -422,19 +430,17 @@ pub const Parser = struct {
         // 这些操作符直接消费 lhs，并且拥有最高的结合力 (Call Precedence)
         // 它们通常不遵循标准的二元运算“左/右结合”规则，而是有自己独立的解析逻辑
         switch (op) {
-            // 1. 解包: val.?
+            // 1. 错误传播/Try: val.?
             .DotQuestion => {
-                // 不需要递归 parseExpression，直接包裹 lhs 即可
-                // prev_token_span 是 '.?' 的位置
-                const unwrap = try self.create(ast.UnwrapExpression, .{
+                const prop = try self.create(ast.PropagateExpression, .{
                     .operand = lhs,
                     .span = lhs.span().merge(self.stream.prev_token_span),
                 });
-                return .{ .Unwrap = unwrap };
+                return .{ .Propagate = prop };
             },
 
-            // 2. 解引用: val.&
-            .DotAmpersand => {
+            // 2. 解引用: val.*
+            .DotStar => {
                 const deref = try self.create(ast.UnaryExpression, .{
                     .operator = .Dereference,
                     .operand = lhs,
@@ -495,18 +501,7 @@ pub const Parser = struct {
                 return .{ .MemberAccess = member_expr };
             },
 
-            // 7. 错误传播: expr?
-            .Question => {
-                // 不需要递归，直接包裹 lhs
-                // prev_token_span 是 '?'
-                const prop = try self.create(ast.PropagateExpression, .{
-                    .operand = lhs,
-                    .span = lhs.span().merge(self.stream.prev_token_span),
-                });
-                return .{ .Propagate = prop };
-            },
-
-            // 8. 宏调用后缀操作符 !
+            // 7. 宏调用后缀操作符 !
             // 语法: expr! ...
             // expr 可以是 identifier (vec), 也可以是 path (std.debug.print)
             .Bang => {
@@ -522,6 +517,81 @@ pub const Parser = struct {
                 });
 
                 return .{ .MacroCall = macro_node };
+            },
+
+            // 8. 范围语法 .. and ..=
+            .DotDot, .DotDotEqual => {
+                const is_inclusive = (op == .DotDotEqual);
+
+                var rhs: ?ast.Expression = null;
+                // 检查是否还有右值
+                const next = self.peek();
+                if (next.tag != .RBracket and next.tag != .RParen and next.tag != .Comma and next.tag != .Semicolon) {
+                    rhs = try self.parseExpression(.Lowest);
+                }
+
+                if (is_inclusive and rhs == null) {
+                    try self.errorAtCurrent(.UnexpectedToken); // "..=" must have an upper bound
+                }
+
+                const end_span = if (rhs) |r| r.span() else self.stream.prev_token_span;
+
+                const range_node = try self.create(ast.RangeExpression, .{
+                    .start = lhs,
+                    .end = rhs,
+                    .is_inclusive = is_inclusive, // 传入标志
+                    .span = lhs.span().merge(end_span),
+                });
+                return .{ .Range = range_node };
+            },
+
+            // 9. 结构体初始化: Type { ... }
+            // 场景: List.<i32> { x: 1 }
+            // 此时:
+            //   lhs = GenericInstantiation (List.<i32>)
+            //   op  = .LBrace ({) -> 此处 '{' 已经被 advance() 吃掉了
+            .LBrace => {
+                const allocator = self.ast_arena.allocator();
+                // 因为 '{' 已经被吃掉了，直接开始解析字段列表
+
+                var fields = std.ArrayList(ast.StructFieldInit).empty;
+
+                // 循环直到遇到 '}'
+                while (!self.check(.RBrace) and !self.check(.Eof)) {
+                    // 1. 解析字段名
+                    const name_tok = try self.expect(.Identifier);
+                    const name_sym = try self.internToken(name_tok);
+                    var value_expr: ast.Expression = undefined;
+
+                    // 2. 检查冒号 field: value
+                    if (self.match(&.{.Colon})) {
+                        value_expr = try self.parseExpression(.Lowest);
+                    } else {
+                        // 简写模式: field (等同于 field: field)
+                        value_expr = .{ .Identifier = .{ .name = name_sym, .span = name_tok.span } };
+                    }
+
+                    try fields.append(allocator, .{
+                        .name = name_sym,
+                        .value = value_expr,
+                        .span = name_tok.span.merge(value_expr.span()),
+                    });
+
+                    // 3. 处理逗号
+                    if (!self.match(&.{.Comma})) break;
+                }
+
+                // 消耗闭合的 '}'
+                const end_brace = try self.expect(.RBrace);
+
+                // 创建 AST 节点
+                const node = try self.create(ast.StructInitializationExpression, .{
+                    .type_expression = lhs, // 左边的表达式 (如 List.<i32>) 就是类型
+                    .fields = try fields.toOwnedSlice(allocator),
+                    .span = lhs.span().merge(end_brace.span),
+                });
+
+                return .{ .StructInitialization = node };
             },
 
             // 如果不是后缀操作，那就进入下面的二元运算处理
@@ -626,11 +696,42 @@ pub const Parser = struct {
                 return .{ .Literal = .{ .kind = .Undef, .value = sym, .span = tok.span } };
             },
 
-            // === 2. 标识符 ===
+            .Unreach => {
+                const tok = self.advance();
+                const sym = try self.internToken(tok);
+                return .{ .Literal = .{ .kind = .Unreachable, .value = sym, .span = tok.span } };
+            },
+
+            // === 2. 标识符 & 结构体初始化 ===
             .Identifier => {
                 const tok = self.advance();
                 const sym = try self.internToken(tok);
-                return .{ .Identifier = .{ .name = sym, .span = tok.span } };
+                const ident_expr: ast.Expression = .{ .Identifier = .{ .name = sym, .span = tok.span } };
+
+                // 检查是否是结构体初始化: Ident { ... }
+                // 如果后面紧跟 `{`，且 `{` 后面紧跟 `Ident :` 或 `Ident ,` 或 `Ident }` (简写) 或 `}` (空)，
+                // 认为是结构体初始化。
+                // 避免与 `if x { block }` 混淆
+                if (self.check(.LBrace)) {
+                    // 看得更远一点 (Peek 2 steps)
+                    const next_next = self.stream.peek(1); // peek(0) is {, peek(1) is inside
+
+                    const is_struct_init = switch (next_next.tag) {
+                        .RBrace => true, // Empty: Ident {}
+                        .Identifier => blk: {
+                            // 检查 Ident 后面是什么: Ident : value OR Ident , OR Ident }
+                            const third = self.stream.peek(2);
+                            break :blk (third.tag == .Colon or third.tag == .Comma or third.tag == .RBrace);
+                        },
+                        else => false, // 比如 Ident { let ... } -> Block
+                    };
+
+                    if (is_struct_init) {
+                        return self.parseStructInitialization(ident_expr);
+                    }
+                }
+
+                return ident_expr;
             },
 
             // === 3. 括号：分组 (Expr) 或 元组 (A, B) ===
@@ -843,6 +944,23 @@ pub const Parser = struct {
                 return self.parseFunctionType();
             },
 
+            // === 8. 范围语法 (range) ===
+            .DotDot, .DotDotEqual => {
+                const start_tok = self.advance();
+                const is_inclusive = (start_tok.tag == .DotDotEqual);
+
+                // 解析右侧
+                const rhs = try self.parseExpression(.Prefix);
+
+                const range_node = try self.create(ast.RangeExpression, .{
+                    .start = null,
+                    .end = rhs,
+                    .is_inclusive = is_inclusive,
+                    .span = start_tok.span.merge(rhs.span()),
+                });
+                return .{ .Range = range_node };
+            },
+
             else => return error.ParseError,
         }
     }
@@ -971,10 +1089,32 @@ pub const Parser = struct {
             .Identifier => return self.parseIdentifierPattern(),
             // 3. 字面量匹配 (1, "abc", true)
             .IntLiteral, .FloatLiteral, .StringLiteral, .CharLiteral, .True, .False, .Null => {
-                const expr = try self.parseExpression(.Prefix); // 复用 Expression 解析字面量
-                // trick: Expression.Literal 和 Pattern.Literal 结构很像，转换一下
-                if (expr != .Literal) return error.ParseError;
-                return .{ .Literal = expr.Literal };
+                // 1. 解析左值
+                const start_expr = try self.parseExpression(.Prefix);
+                if (start_expr != .Literal) return error.ParseError;
+                const start_lit = start_expr.Literal;
+
+                // 2. 检查是否有范围操作符 (.. 或 ..=)
+                if (self.check(.DotDot) or self.check(.DotDotEqual)) {
+                    const op_token = self.advance(); // 吃掉操作符
+                    const is_inclusive = (op_token.tag == .DotDotEqual);
+
+                    // 3. 解析右值
+                    const end_expr = try self.parseExpression(.Prefix);
+                    if (end_expr != .Literal) return error.ParseError;
+                    const end_lit = end_expr.Literal;
+
+                    return .{
+                        .Range = .{
+                            .start = start_lit,
+                            .end = end_lit,
+                            .is_inclusive = is_inclusive, // 传入标志
+                            .span = start_lit.span.merge(end_lit.span),
+                        },
+                    };
+                }
+
+                return .{ .Literal = start_lit };
             },
 
             // 4. 元组解构 (a, b)
@@ -1254,22 +1394,23 @@ pub const Parser = struct {
     /// 解析类型
     /// 这里的规则与 parseExpression 不同：
     /// 1. `<` 直接被解析为泛型参数 (List<i32>)，不需要 .<
-    /// 2. 不支持算术运算符 (+, -, *)，除非在 Array Size [N] 内部
+    /// 2. 支持范围类型语法: StartType .. EndType
     fn parseType(self: *Parser) ParseError!ast.Expression {
         // 1. 解析前缀 (Prefix)
-        // 类型的起点通常是：Identifier, [, &, ?, fn, *, extern
+        // 类型的起点通常是：Identifier, [, &, ?, fn, *, extern, (, !
         var left = try self.parseTypePrefix();
 
-        // 2. 解析后缀 (Suffix)
+        // 2. 解析后缀 (Suffix) 和 中缀 (Infix for Type)
         // 类型通常只支持：
         // - .Member (命名空间引用 std.collections.List)
         // - <T> (泛型实例化)
+        // - .. / ..= (范围类型) [NEW]
 
         while (true) {
             const token = self.peek();
 
+            // === 泛型: List<T> ===
             if (token.tag == .LessThan) {
-                // List<i32>
                 // 消耗 < ... >
                 _ = self.advance(); // <
                 const args = try self.parseGenericArguments(); // ... >
@@ -1286,8 +1427,8 @@ pub const Parser = struct {
                 continue;
             }
 
+            // === 成员访问: std.List ===
             if (token.tag == .Dot) {
-                // std.List
                 _ = self.advance(); // eat .
                 const name_tok = try self.expect(.Identifier);
                 const sym = try self.internToken(name_tok);
@@ -1299,6 +1440,31 @@ pub const Parser = struct {
                 });
                 left = .{ .MemberAccess = node };
                 continue;
+            }
+
+            // === [NEW] 范围类型: T .. T ===
+            // 例如: usize .. usize 或 u8 ..= u8
+            // 逻辑：left 已经是完整解析好的左侧类型（包含泛型等），
+            // 如果遇到 ..，则消耗它并递归解析右侧类型。
+            if (token.tag == .DotDot or token.tag == .DotDotEqual) {
+                const op_token = self.advance(); // eat .. or ..=
+                const is_inclusive = (op_token.tag == .DotDotEqual);
+
+                // 递归解析右侧类型
+                // 注意：这里调用 parseType 是因为右侧也可以是复杂的类型 (如 std.List<i32>)
+                const right = try self.parseType();
+
+                const node = try self.create(ast.RangeExpression, .{
+                    .start = left, // 左侧类型
+                    .end = right, // 右侧类型
+                    .is_inclusive = is_inclusive,
+                    .span = left.span().merge(right.span()),
+                });
+
+                // Range 类型构造完成后，通常就不能再接 .Dot 或 <T> 了
+                // (i32..i32).foo 这种语法在类型定义中极其罕见且有歧义
+                // 所以我们直接返回结果
+                return .{ .Range = node };
             }
 
             // 如果遇到其他符号 (比如 { = ; , ) )，说明类型解析结束
@@ -1383,6 +1549,18 @@ pub const Parser = struct {
             .Fn => {
                 return self.parseFunctionType();
             },
+
+            // 6. 不可达类型 (!)
+            .Bang => {
+                const tok = self.advance(); // eat '!'
+                return .{ .NeverType = tok.span };
+            },
+
+            // 7. 元组类型
+            .LParen => {
+                return self.parsePrefix();
+            },
+
             else => {
                 try self.errorAtCurrent(.UnexpectedToken);
                 return error.ParseError;
@@ -1398,16 +1576,24 @@ pub const Parser = struct {
         const token = self.peek();
 
         switch (token.tag) {
-            // 1. 声明类语句 (Delegate to specific parsers)
+            // 1. 本地绑定
             .Let => return self.parseLetStatement(),
-            .Const => return self.parseConstDeclaration(),
+
+            // 2. 控制流语句
             .For => return self.parseForStatement(),
             .Return => return self.parseReturnStatement(),
             .Defer => return self.parseDeferStatement(),
             .Break => return self.parseBreakStatement(),
             .Continue => return self.parseContinueStatement(),
 
-            // 2. 表达式语句 (Expression Statement)
+            // 3. 嵌套声明
+            // 允许在 Block 内部定义 fn, struct, enum, static, const 等
+            .Fn, .Struct, .Enum, .Union, .Trait, .Impl, .Type, .Const, .Static, .Extern, .Use, .Macro => {
+                const decl = try self.parseDeclaration();
+                return .{ .Declaration = decl };
+            },
+
+            // 4. 表达式语句
             else => {
                 const expr = try self.parseExpression(.Lowest);
 
@@ -1465,30 +1651,6 @@ pub const Parser = struct {
             .span = start.span.merge(end.span),
         });
         return .{ .Let = node };
-    }
-
-    fn parseConstDeclaration(self: *Parser) !ast.Statement {
-        // const Name: Type = Value; (const 不支持复杂 Pattern，必须是 ID)
-        const start = self.advance();
-        const name_tok = try self.expect(.Identifier);
-        const sym = try self.internToken(name_tok);
-
-        var type_anno: ?ast.Expression = null;
-        if (self.match(&.{.Colon})) {
-            type_anno = try self.parseType();
-        }
-
-        _ = try self.expect(.Assign);
-        const value = try self.parseExpression(.Lowest);
-        const end = try self.expect(.Semicolon);
-
-        const node = try self.create(ast.ConstStatement, .{
-            .name = sym,
-            .type_annotation = type_anno,
-            .value = value,
-            .span = start.span.merge(end.span),
-        });
-        return .{ .Const = node };
     }
 
     fn parseReturnStatement(self: *Parser) !ast.Statement {
@@ -1554,9 +1716,19 @@ pub const Parser = struct {
         var result_expr: ?ast.Expression = null;
 
         while (!self.check(.RBrace) and !self.check(.Eof)) {
-            if (self.check(.Let) or self.check(.Const) or
-                self.check(.For) or self.check(.Return) or self.check(.Defer) or
-                self.check(.Break) or self.check(.Continue))
+            // 判定是否为语句/声明的开始
+            if (
+            // 1. 标准语句关键字
+            self.check(.Let) or self.check(.For) or
+                self.check(.Return) or self.check(.Defer) or
+                self.check(.Break) or self.check(.Continue) or
+
+                // 2. 声明关键字 (Declarations)
+                // 这些关键字出现在块内时，也视为语句的一部分
+                self.check(.Fn) or self.check(.Struct) or self.check(.Enum) or
+                self.check(.Union) or self.check(.Trait) or self.check(.Impl) or
+                self.check(.Type) or self.check(.Const) or self.check(.Static) or
+                self.check(.Extern) or self.check(.Use) or self.check(.Macro))
             {
                 try stmts.append(allocator, try self.parseStatement());
             } else {
@@ -1571,7 +1743,7 @@ pub const Parser = struct {
                     result_expr = expr;
                     break;
                 } else {
-                    // 3. [新增补丁] 没分号，但它是 If/Match/Block -> 视为语句
+                    // 3. 没分号，但它是 If/Match/Block -> 视为语句
                     switch (expr) {
                         .If, .Match, .Block => {
                             try stmts.append(allocator, .{ .ExpressionStatement = expr });
@@ -1596,7 +1768,7 @@ pub const Parser = struct {
 
     fn parseIfExpression(self: *Parser) !ast.Expression {
         const start = self.advance(); // eat if
-        const condition = try self.parseExpression(.Lowest); // if 不需要括号
+        const condition = try self.parseExpressionNoStruct(.Lowest);
 
         // 解析 then block (必须是 Block)
         // 这里的 parseBlockExpression 返回的是 Expression(Block)，需要转回 *BlockExpression
@@ -1630,7 +1802,7 @@ pub const Parser = struct {
         const start = self.advance(); // eat match
 
         // 1. Target Expression (没有括号)
-        const target = try self.parseExpression(.Lowest);
+        const target = try self.parseExpressionNoStruct(.Lowest);
 
         _ = try self.expect(.LBrace);
         var arms = std.ArrayList(ast.MatchArm).empty;
@@ -1708,7 +1880,7 @@ pub const Parser = struct {
         // 如果不是 {，说明有步进表达式
         // 步进部分后面紧跟 {，没有分号
         if (!self.check(.LBrace)) {
-            post = try self.parseExpression(.Lowest);
+            post = try self.parseExpressionNoStruct(.Lowest);
         }
 
         // === 4. 循环体 (Body) ===
@@ -1723,32 +1895,91 @@ pub const Parser = struct {
         });
         return .{ .For = node };
     }
+
+    /// 解析结构体初始化语法
+    /// type_expr: 已经解析出来的类型部分 (通常是 Identifier 或 GenericInstantiation)
+    /// start_brace: '{' token
+    fn parseStructInitialization(self: *Parser, type_expr: ast.Expression) !ast.Expression {
+        const allocator = self.ast_arena.allocator();
+        // 确保下一个是 {
+        _ = try self.expect(.LBrace);
+
+        var fields = std.ArrayList(ast.StructFieldInit).empty;
+
+        while (!self.check(.RBrace) and !self.check(.Eof)) {
+            // 字段名
+            const name_tok = try self.expect(.Identifier);
+            const name_sym = try self.internToken(name_tok);
+            var value_expr: ast.Expression = undefined;
+
+            // 检查冒号 field: value
+            if (self.match(&.{.Colon})) {
+                value_expr = try self.parseExpression(.Lowest);
+            } else {
+                // 简写 field (等同于 field: field)
+                value_expr = .{ .Identifier = .{ .name = name_sym, .span = name_tok.span } };
+            }
+
+            try fields.append(allocator, .{
+                .name = name_sym,
+                .value = value_expr,
+                .span = name_tok.span.merge(value_expr.span()),
+            });
+
+            if (!self.match(&.{.Comma})) break;
+        }
+
+        const end_brace = try self.expect(.RBrace);
+
+        const node = try self.create(ast.StructInitializationExpression, .{
+            .type_expression = type_expr,
+            .fields = try fields.toOwnedSlice(allocator),
+            .span = type_expr.span().merge(end_brace.span),
+        });
+        return .{ .StructInitialization = node };
+    }
+
     // ==========================================
     // Top-Level Declarations
     // ==========================================
 
-    fn parseDeclaration(self: *Parser) ParseError!ast.Declaration {
-        // 1. 处理可见性修饰符 pub
-        var visibility = ast.Visibility.Private;
+    /// [Helper] 解析可见性修饰符
+    /// 仅仅消耗 'pub' (如果有的话)
+    fn parseVisibility(self: *Parser) ast.Visibility {
         if (self.match(&.{.Pub})) {
-            visibility = .Public;
+            return .Public;
         }
+        return .Private;
+    }
 
+    /// [Entry Point] 解析一个完整的声明 (包含可见性)
+    /// 用于 Module 顶层或允许声明的 Statement 位置
+    fn parseDeclaration(self: *Parser) ParseError!ast.Declaration {
+        const vis = self.parseVisibility();
+        return self.parseDeclarationRest(vis);
+    }
+
+    /// [Core Logic] 给定可见性，解析剩余的声明部分
+    /// 此时 'pub' 已经被消耗，根据 peek() 的 Token 分发
+    fn parseDeclarationRest(self: *Parser, vis: ast.Visibility) ParseError!ast.Declaration {
         const token = self.peek();
         switch (token.tag) {
-            .Fn => return self.parseFunctionDeclaration(visibility),
-            .Struct => return self.parseStructDeclaration(visibility),
-            .Enum => return self.parseEnumDeclaration(visibility),
-            .Union => return self.parseUnionDeclaration(visibility),
-            .Trait => return self.parseTraitDeclaration(visibility),
+            .Fn => return self.parseFunctionDeclaration(vis),
+            .Struct => return self.parseStructDeclaration(vis),
+            .Enum => return self.parseEnumDeclaration(vis),
+            .Union => return self.parseUnionDeclaration(vis),
+            .Trait => return self.parseTraitDeclaration(vis),
             .Impl => return self.parseImplDeclaration(),
-            .Use => return self.parseUseDeclaration(visibility),
-            .Macro => return self.parseMacroDeclaration(visibility),
+            .Use => return self.parseUseDeclaration(vis),
+            .Macro => return self.parseMacroDeclaration(vis),
             .Extern => return self.parseExternBlock(),
-            .Type => return self.parseTypeAliasDeclaration(visibility),
-            .Let => return self.parseGlobalVarDeclaration(visibility, .Let),
-            .Const => return self.parseGlobalVarDeclaration(visibility, .Const),
+            .Type => return self.parseTypeAliasDeclaration(vis),
 
+            // 静态变量 (Static / Const)
+            .Static => return self.parseGlobalVarDeclaration(vis, .Static),
+            .Const => return self.parseGlobalVarDeclaration(vis, .Const),
+
+            // 错误处理
             else => {
                 try self.errorAtCurrent(.UnexpectedToken);
                 return error.ParseError;
@@ -1770,10 +2001,17 @@ pub const Parser = struct {
             const name_tok = try self.expect(.Identifier);
             const sym = try self.internToken(name_tok);
 
-            // 约束: T: Addable
-            var constraint: ?ast.Expression = null;
+            // 约束: T: Addable + Copy
+            var constraints = std.ArrayList(ast.Expression).empty;
             if (self.match(&.{.Colon})) {
-                constraint = try self.parseExpression(.Lowest);
+                // 解析第一个约束
+                while (true) {
+                    const constraint_type = try self.parseType();
+                    try constraints.append(allocator, constraint_type);
+
+                    // 如果有 + 号，继续解析下一个约束
+                    if (!self.match(&.{.Plus})) break;
+                }
             }
 
             // 默认值: T = i32 (0.0.5 新增)
@@ -1784,9 +2022,9 @@ pub const Parser = struct {
 
             try params.append(allocator, .{
                 .name = sym,
-                .constraint = constraint,
+                .constraints = try constraints.toOwnedSlice(allocator), // fix: 赋值 slice
                 .default_value = default,
-                .span = name_tok.span, // 简单起见只记录名字 span
+                .span = name_tok.span,
             });
 
             if (!self.match(&.{.Comma})) break;
@@ -1798,7 +2036,7 @@ pub const Parser = struct {
 
     fn parseStructDeclaration(self: *Parser, vis: ast.Visibility) !ast.Declaration {
         const allocator = self.ast_arena.allocator();
-        const start = self.advance(); // eat struct
+        const start = self.advance(); // eat 'struct'
 
         // 1. 名字
         const name_tok = try self.expect(.Identifier);
@@ -1807,42 +2045,66 @@ pub const Parser = struct {
         // 2. 泛型定义 <T>
         const generics = try self.parseGenericParameters();
 
-        // 3. 继承语法 : BaseType (0.0.5 核心)
+        // 3. 继承语法 : BaseType
         var base_type: ?ast.Expression = null;
         if (self.match(&.{.Colon})) {
-            // 解析类型表达式 (优先级 Prefix 即可，紧密结合)
             base_type = try self.parseExpression(.Prefix);
         }
 
-        // 4. 字段列表 { ... }
+        // 4. 解析主体 { ... }
         _ = try self.expect(.LBrace);
+
         var fields = std.ArrayList(ast.StructFieldDeclaration).empty;
+        var decls = std.ArrayList(ast.Declaration).empty;
 
         while (!self.check(.RBrace) and !self.check(.Eof)) {
-            // 字段可见性
-            var field_vis = ast.Visibility.Private;
-            if (self.match(&.{.Pub})) field_vis = .Public;
+            // A. 先解析可见性 (Common Step)
+            const member_vis = self.parseVisibility();
 
-            const field_name_tok = try self.expect(.Identifier);
-            const field_sym = try self.internToken(field_name_tok);
+            const token = self.peek();
 
-            _ = try self.expect(.Colon);
-            const field_type = try self.parseType();
+            // B. 分支判断：是嵌套声明还是实例字段？
+            switch (token.tag) {
+                // === 情况 1: 嵌套声明 (Nested Declarations) ===
+                // 只要是这些关键字开头，就调用 parseDeclarationRest
+                .Fn, .Struct, .Enum, .Union, .Trait, .Impl, .Type, .Const, .Static, .Extern, .Use, .Macro => {
+                    const decl = try self.parseDeclarationRest(member_vis);
+                    try decls.append(allocator, decl);
+                },
 
-            // 字段默认值: x: i32 = 0
-            var default_val: ?ast.Expression = null;
-            if (self.match(&.{.Assign})) {
-                default_val = try self.parseExpression(.Lowest);
+                // === 情况 2: 实例字段 (Identifier: Type) ===
+                .Identifier => {
+                    // 字段名
+                    const field_name_tok = self.advance();
+                    const field_sym = try self.internToken(field_name_tok);
+
+                    _ = try self.expect(.Colon);
+                    const field_type = try self.parseType();
+
+                    // 默认值
+                    var default_val: ?ast.Expression = null;
+                    if (self.match(&.{.Assign})) {
+                        default_val = try self.parseExpression(.Lowest);
+                    }
+
+                    // 逗号
+                    _ = self.match(&.{.Comma});
+
+                    try fields.append(allocator, .{
+                        .name = field_sym,
+                        .visibility = member_vis,
+                        .type_expression = field_type,
+                        .default_value = default_val,
+                        .span = field_name_tok.span.merge(if (default_val) |v| v.span() else field_type.span()),
+                    });
+                },
+
+                else => {
+                    try self.errorAtCurrent(.UnexpectedToken);
+                    // 错误恢复：跳过当前 Token 防止死循环
+                    _ = self.advance();
+                },
             }
-            _ = self.match(&.{.Comma}); // 尾随逗号可选
-
-            try fields.append(allocator, .{
-                .name = field_sym,
-                .visibility = field_vis,
-                .type_expression = field_type,
-                .default_value = default_val,
-                .span = field_name_tok.span.merge(field_type.span()),
-            });
         }
 
         const end = try self.expect(.RBrace);
@@ -1853,6 +2115,7 @@ pub const Parser = struct {
             .generics = generics,
             .base_type = base_type,
             .fields = try fields.toOwnedSlice(allocator),
+            .declarations = try decls.toOwnedSlice(allocator), // [Filled]
             .span = start.span.merge(end.span),
         });
         return .{ .Struct = node };
@@ -2146,30 +2409,41 @@ pub const Parser = struct {
         return .{ .TypeAlias = node };
     }
 
-    fn parseGlobalVarDeclaration(self: *Parser, vis: ast.Visibility, kind: ast.GlobalVarKind) !ast.Declaration {
-        const start = self.advance(); // eat let/var/const
+    // 改名建议：parseStaticOrConstDeclaration
+    fn parseGlobalVarDeclaration(self: *Parser, vis: ast.Visibility, start_kind: ast.GlobalVarKind) !ast.Declaration {
+        const start = self.advance(); // eat 'const' or 'static'
+        var kind = start_kind;
 
-        // 1. 模式/变量名
-        const pat = try self.parsePattern();
+        // 1. 如果是 static，检查后面有没有 mut
+        if (start.tag == .Static) {
+            if (self.match(&.{.Mut})) {
+                kind = .StaticMut;
+            }
+        }
 
-        // 2. 类型注解 (可选)
+        // 2. 名字 (强制 Identifier)
+        const name_tok = try self.expect(.Identifier);
+        const name_sym = try self.internToken(name_tok);
+
+        // 3. 类型注解 (static 必须有, const 可选)
         var type_anno: ?ast.Expression = null;
         if (self.match(&.{.Colon})) {
             type_anno = try self.parseType();
+        } else if (kind != .Const) {
+            // static 必须显式标注类型，Loom 设计偏好显式
+            try self.errorAtCurrent(.ExpectedType);
         }
 
-        // 3. 初始化值
-        // 全局变量通常必须初始化 (extern 除外，但 extern 在 parseExternBlock 处理)
+        // 4. 初始化值
         _ = try self.expect(.Assign);
         const value = try self.parseExpression(.Lowest);
 
-        // 4. 分号
         const end = try self.expect(.Semicolon);
 
         const node = try self.create(ast.GlobalVarDeclaration, .{
             .kind = kind,
             .visibility = vis,
-            .pattern = pat,
+            .name = name_sym, // AST 中已改为 name
             .type_annotation = type_anno,
             .value = value,
             .span = start.span.merge(end.span),
@@ -2353,7 +2627,25 @@ pub const Parser = struct {
         // 2. 泛型 <T>
         const generics = try self.parseGenericParameters();
 
-        // 3. 方法列表 { fn ... }
+        // 3. 解析父特质 (Super Traits)
+        // 语法: trait Child: Parent + Copy { ... }
+        var super_traits = std.ArrayList(ast.Expression).empty;
+
+        // 检查是否有冒号
+        if (self.match(&.{.Colon})) {
+            while (true) {
+                // 解析类型 (Trait 本质上是类型表达式)
+                // parseType 会解析 Identifier 或 Path (std.io.Reader) 或 Generic (Iterable<T>)
+                // 它不会吃掉 + 号，因为 parseType 遇到 + 会停止
+                const trait_expr = try self.parseType();
+                try super_traits.append(allocator, trait_expr);
+
+                // 如果没有 + 号，说明列表结束
+                if (!self.match(&.{.Plus})) break;
+            }
+        }
+
+        // 4. 方法列表 { fn ... }
         _ = try self.expect(.LBrace);
         var methods = std.ArrayList(ast.FunctionDeclaration).empty;
 
@@ -2390,6 +2682,7 @@ pub const Parser = struct {
             .name = name_sym,
             .visibility = vis,
             .generics = generics,
+            .super_traits = try super_traits.toOwnedSlice(allocator),
             .methods = try methods.toOwnedSlice(allocator),
             .span = start.span.merge(end.span),
         });
@@ -2401,47 +2694,52 @@ pub const Parser = struct {
         const start = self.advance(); // eat 'impl'
 
         // 1. 解析泛型参数
-        // 语法: impl<T> Point<T>
         const generics = try self.parseGenericParameters();
 
-        // 2. 解析目标类型 (Self 类型)
-        // 使用 .Lowest 贪婪解析，以支持 impl List.<i32> 或 impl [10]u8
+        // 2. 解析目标类型
         const target_type = try self.parseType();
 
         // 3. 解析 Trait 接口 (可选)
-        // 语法: impl Type: Trait
         var trait_interface: ?ast.Expression = null;
-
         if (self.match(&.{.Colon})) {
-            // 冒号后面的是 Trait
             trait_interface = try self.parseType();
         }
 
-        // 4. 解析方法块
+        // 4. 解析声明列表
         _ = try self.expect(.LBrace);
-        var methods = std.ArrayList(ast.FunctionDeclaration).empty;
+
+        var decls = std.ArrayList(ast.Declaration).empty;
 
         while (!self.check(.RBrace) and !self.check(.Eof)) {
-            // 方法可见性
-            var method_vis = ast.Visibility.Private;
-            if (self.match(&.{.Pub})) method_vis = .Public;
+            // A. 解析可见性
+            const member_vis = self.parseVisibility();
 
-            // 检查是否是 fn (impl 块里只能有 fn)
-            if (self.check(.Fn)) {
-                // 注意：parseFunctionDeclaration 返回的是 Declaration union
-                const decl_enum = try self.parseFunctionDeclaration(method_vis);
-                // 我们确信它是 Function，解包出来
-                if (decl_enum == .Function) {
-                    try methods.append(allocator, decl_enum.Function.*); // copy struct
-                } else {
-                    // 理论上不可能到达，因为 parseFunctionDeclaration 只返回 Function
-                    unreachable;
-                }
-            } else {
-                // 错误恢复：遇到非 fn 的东西
-                if (self.check(.RBrace)) break;
+            // B. 检查禁止嵌套 Impl
+            if (self.check(.Impl)) {
+                // 明确禁止嵌套 impl
                 try self.errorAtCurrent(.UnexpectedToken);
+                // 错误恢复：吃掉 impl 防止死循环
                 _ = self.advance();
+                continue;
+            }
+
+            // C. 检查允许的 Token
+            // 允许: fn, const, static, struct, enum, union, type, use, macro...
+            // 这些都在 parseDeclarationRest 中处理了
+            const token = self.peek();
+
+            // 白名单检查
+            switch (token.tag) {
+                .Fn, .Const, .Static, .Struct, .Enum, .Union, .Type, .Use, .Macro, .Extern => {
+                    // 复用通用的声明解析逻辑
+                    const decl = try self.parseDeclarationRest(member_vis);
+                    try decls.append(allocator, decl);
+                },
+                else => {
+                    // 遇到无法识别的 Token
+                    try self.errorAtCurrent(.UnexpectedToken);
+                    _ = self.advance();
+                },
             }
         }
 
@@ -2451,7 +2749,7 @@ pub const Parser = struct {
             .generics = generics,
             .target_type = target_type,
             .trait_interface = trait_interface,
-            .methods = try methods.toOwnedSlice(allocator),
+            .declarations = try decls.toOwnedSlice(allocator),
             .span = start.span.merge(end.span),
         });
         return .{ .Implementation = node };
@@ -2607,6 +2905,37 @@ pub const Parser = struct {
         return matchers.toOwnedSlice(allocator);
     }
 
+    // 解析宏的 Body (Token Tree)
+    // 遇到 { 开头，直到匹配的 } 结束
+    fn parseMacroBody(self: *Parser) ![]const Token {
+        const allocator = self.ast_arena.allocator();
+        const start_token = try self.expect(.LBrace); // eat {
+
+        var tokens = std.ArrayList(Token).empty;
+        // 把起始的 { 加进去
+        try tokens.append(allocator, start_token);
+
+        var nesting: usize = 1;
+
+        while (nesting > 0 and !self.check(.Eof)) {
+            const t = self.advance();
+            try tokens.append(allocator, t);
+
+            if (t.tag == .LBrace) {
+                nesting += 1;
+            } else if (t.tag == .RBrace) {
+                nesting -= 1;
+            }
+        }
+
+        if (nesting > 0) {
+            try self.errorAtCurrent(.UnexpectedToken); // Unclosed macro body
+            return error.ParseError;
+        }
+
+        return tokens.toOwnedSlice(allocator);
+    }
+
     fn parseMacroDeclaration(self: *Parser, vis: ast.Visibility) !ast.Declaration {
         const allocator = self.ast_arena.allocator();
         const start = self.advance(); // eat 'macro'
@@ -2619,25 +2948,25 @@ pub const Parser = struct {
         while (!self.check(.RBrace) and !self.check(.Eof)) {
             // 1. Matchers
             _ = try self.expect(.LParen);
-
-            // 调用递归解析函数，直到遇到 )
             const matchers = try self.parseMacroMatchers(.RParen);
-
             _ = try self.expect(.RParen);
 
             // 2. Arrow =>
             _ = try self.expect(.Arrow);
 
             // 3. Body
-            const body = try self.parseExpression(.Lowest);
+            const body_tokens = try self.parseMacroBody();
 
-            // 4. Delimiter
+            // 计算 Span: 从 name 到 body 的最后一个 token
+            const last_token = body_tokens[body_tokens.len - 1];
+            const rule_span = name_tok.span.merge(last_token.span);
+
+            // 4. Delimiter (可选的分号)
             _ = self.match(&.{ .Semicolon, .Comma });
 
-            const rule_span = name_tok.span.merge(body.span());
             try rules.append(allocator, .{
-                .matchers = matchers, // 这里已经是 []MacroMatcher 了
-                .body = body,
+                .matchers = matchers,
+                .body = body_tokens,
                 .span = rule_span,
             });
         }
@@ -2686,29 +3015,32 @@ pub const Parser = struct {
     /// 启发式判断：Token 是否看起来像一个类型的开头
     fn isTypeStart(token: Token) bool {
         return switch (token.tag) {
-            .Identifier, // MyStruct
+            // === 肯定不是类型 ===
             .IntLiteral,
             .FloatLiteral,
             .CharLiteral,
             .StringLiteral,
-            => false, // 字面量显然不是类型
+            .True,
+            .False,
+            .Null,
+            .Undef,
+            .Unreach,
+            => false,
+
+            // === 肯定是类型开头 ===
+            .Identifier, // MyType
             .Fn, // fn(i32)
             .Question, // ?T
-            .Hash, // #
-
-            // === 危险区：歧义符号 ===
             .Ampersand, // &T
             .Star, // *T
             .LBracket, // []T, [N]T
-            .DotLessThan, // .<T> (泛型调用返回值作为类型?) 通常不算
-
-            // 关键字类
+            .Bang, // ! (Never Type)
+            .SelfType, // Self
+            .LParen, // (i32, i32) 元组类型
             .Struct,
             .Enum,
             .Union,
-            .SelfType,
-            .Undef,
-            => true,
+            => false,
 
             else => false,
         };
@@ -2720,6 +3052,51 @@ pub const Parser = struct {
 // ==========================================
 
 const Lexer = @import("lexer.zig").Lexer;
+const testing = std.testing;
+
+const TestContext = struct {
+    // 指针指向堆上的 Arena，确保地址不变
+    arena_ptr: *std.heap.ArenaAllocator,
+    context: *Context,
+    parser: Parser,
+
+    pub fn init(source: []const u8) TestContext {
+        // 1. 在堆上分配 Arena 实例
+        const arena_ptr = testing.allocator.create(std.heap.ArenaAllocator) catch unreachable;
+        // 初始化
+        arena_ptr.* = std.heap.ArenaAllocator.init(testing.allocator);
+
+        // 2. 现在获取 allocator 是安全的，因为 arena_ptr 指向的堆内存不会动
+        const allocator = arena_ptr.allocator();
+
+        // 3. 初始化 Context
+        const ctx_ptr = allocator.create(Context) catch unreachable;
+        ctx_ptr.* = Context.init(allocator);
+
+        const lexer = Lexer.init(source);
+
+        const stream = TokenStream.init(lexer);
+
+        // 4. 初始化 Parser
+        const parser = Parser.init(allocator, stream, ctx_ptr, source);
+
+        return .{
+            .arena_ptr = arena_ptr,
+            .context = ctx_ptr,
+            .parser = parser,
+        };
+    }
+
+    pub fn deinit(self: *TestContext) void {
+        self.parser.deinit();
+        self.arena_ptr.deinit(); // 释放 arena 管理的所有内存
+        testing.allocator.destroy(self.arena_ptr); // 释放 arena 结构体本身
+    }
+
+    pub fn parse(self: *TestContext) !ast.Module {
+        return self.parser.parseModule();
+    }
+};
 
 test "Parser: Macro Call Suffix Logic" {
     const source =
@@ -2729,46 +3106,31 @@ test "Parser: Macro Call Suffix Logic" {
         \\}
     ;
 
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+    var tc = TestContext.init(source);
+    defer tc.deinit();
 
-    const lexer = Lexer.init(source);
-    const stream = TokenStream.init(lexer);
-
-    var context = Context.init(allocator);
-    defer context.deinit();
-
-    var parser = Parser.init(allocator, stream, &context, source);
-    defer parser.deinit();
-
-    const mod = try parser.parseModule();
+    const mod = try tc.parse();
 
     // 检查第一个语句: std.debug.print!("Hello");
     const func = mod.declarations[0].Function;
     const stmt = func.body.?.statements[0];
 
-    // 应该是一个 ExpressionStatement -> MacroCall
     switch (stmt.ExpressionStatement) {
         .MacroCall => |call| {
-            // Callee 应该是 MemberAccess (std.debug.print)
+            // 验证 Callee: std.debug.print
             switch (call.callee) {
                 .MemberAccess => |ma| {
-                    // 1. 使用 context 中的 interner 将 SymbolId 解析回字符串
-                    const name_str = parser.context.resolve(ma.member_name);
-
-                    // 2. 验证字符串内容
-                    try std.testing.expectEqualStrings("print", name_str);
+                    const name_str = tc.parser.context.resolve(ma.member_name);
+                    try testing.expectEqualStrings("print", name_str);
                 },
-                else => try std.testing.expect(false), // 结构不对
+                else => try testing.expect(false),
             }
 
-            // 验证参数数量 (Token Tree)
-            // "Hello" 应该生成 1 个 Token (StringLiteral)
-            try std.testing.expectEqual(@as(usize, 1), call.arguments.len);
-            try std.testing.expectEqual(call.arguments[0].tag, .StringLiteral);
+            // 验证参数: "Hello"
+            try testing.expectEqual(@as(usize, 1), call.arguments.len);
+            try testing.expectEqual(call.arguments[0].tag, .StringLiteral);
         },
-        else => try std.testing.expect(false), // 解析成了别的表达式
+        else => try testing.expect(false),
     }
 }
 
@@ -2777,79 +3139,53 @@ test "Parser: Type Parsing (Generics without Turbofish)" {
         \\type MyList = List<i32>;
         \\fn make() List<u8>; 
     ;
-    // 这里的关键是 List<u8>，如果还在用 parseExpression，可能会因为 < 被当做小于号而报错或解析错误
 
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+    var tc = TestContext.init(source);
+    defer tc.deinit();
 
-    const lexer = Lexer.init(source);
-    const stream = TokenStream.init(lexer);
+    const mod = try tc.parse();
 
-    var context = Context.init(allocator);
-    defer context.deinit();
-
-    var parser = Parser.init(allocator, stream, &context, source);
-    defer parser.deinit();
-
-    const mod = try parser.parseModule();
-
-    // 1. 检查 Type Alias
+    // 1. 检查 Type Alias: List<i32>
     const type_alias = mod.declarations[0].TypeAlias;
     switch (type_alias.target) {
         .GenericInstantiation => |gen| {
-            // Base 应该是 List
-            // Arguments 应该是 [i32]
-            try std.testing.expectEqual(@as(usize, 1), gen.arguments.len);
+            try testing.expectEqual(@as(usize, 1), gen.arguments.len);
+            // 进一步验证参数是不是 i32 标识符
+            // ...
         },
-        else => try std.testing.expect(false),
+        else => try testing.expect(false),
     }
 
-    // 2. 检查函数返回值
+    // 2. 检查函数返回值: List<u8>
     const func_decl = mod.declarations[1].Function;
     const ret_type = func_decl.return_type.?;
     switch (ret_type) {
         .GenericInstantiation => |gen| {
-            // 成功解析为 List<u8>
-            try std.testing.expectEqual(@as(usize, 1), gen.arguments.len);
+            try testing.expectEqual(@as(usize, 1), gen.arguments.len);
         },
-        else => try std.testing.expect(false),
+        else => try testing.expect(false),
     }
 }
 
 test "Parser: Use Group Import" {
     const source = "use std.io.{Read, Write};";
+    var tc = TestContext.init(source);
+    defer tc.deinit();
 
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const lexer = Lexer.init(source);
-    const stream = TokenStream.init(lexer);
-
-    var context = Context.init(allocator);
-    defer context.deinit();
-
-    var parser = Parser.init(allocator, stream, &context, source);
-    defer parser.deinit();
-
-    const mod = try parser.parseModule();
-
+    const mod = try tc.parse();
     const use_decl = mod.declarations[0].Use;
 
-    // 检查 path 是否是 ImportGroup
     switch (use_decl.path) {
         .ImportGroup => |group| {
-            // Parent 应该是 std.io
+            // Parent: std.io
             switch (group.parent) {
                 .MemberAccess => {}, // OK
-                else => try std.testing.expect(false),
+                else => try testing.expect(false),
             }
-
-            // SubPaths 应该是 [Read, Write]
-            try std.testing.expectEqual(@as(usize, 2), group.sub_paths.len);
+            // SubPaths: [Read, Write]
+            try testing.expectEqual(@as(usize, 2), group.sub_paths.len);
         },
-        else => try std.testing.expect(false), // 没解析出 Group
+        else => try testing.expect(false),
     }
 }
 
@@ -2861,34 +3197,17 @@ test "Parser: Strict For Loop" {
         \\    }
         \\}
     ;
+    var tc = TestContext.init(source);
+    defer tc.deinit();
 
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const lexer = Lexer.init(source);
-    const stream = TokenStream.init(lexer);
-
-    var context = Context.init(allocator);
-    defer context.deinit();
-
-    var parser = Parser.init(allocator, stream, &context, source);
-    defer parser.deinit();
-
-    const mod = try parser.parseModule();
-
-    // 获取第一条语句
+    const mod = try tc.parse();
     const stmt = mod.declarations[0].Function.body.?.statements[0];
-    switch (stmt) {
-        .For => |f| { // 匹配 .For 标签，并捕获 payload 为 'f'
-            // f 是 *ast.ForStatement
-            try std.testing.expect(f.initializer != null);
-            try std.testing.expect(f.condition != null);
-            try std.testing.expect(f.post_iteration != null);
-        },
-        else => {
-            // 如果解析出来的不是 For 循环，测试失败
-            try std.testing.expect(false);
+
+    switch (stmt.For) {
+        else => |f| {
+            try testing.expect(f.initializer != null);
+            try testing.expect(f.condition != null);
+            try testing.expect(f.post_iteration != null);
         },
     }
 }
@@ -2899,37 +3218,172 @@ test "Parser: Struct Pattern with Rest" {
         \\    let Point { x, .. } = p;
         \\}
     ;
+    var tc = TestContext.init(source);
+    defer tc.deinit();
 
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const lexer = Lexer.init(source);
-    const stream = TokenStream.init(lexer);
-
-    var context = Context.init(allocator);
-    defer context.deinit();
-    var parser = Parser.init(allocator, stream, &context, source);
-    defer parser.deinit();
-    const mod = try parser.parseModule();
-
-    // 1. 获取 Let 语句
+    const mod = try tc.parse();
     const stmt = mod.declarations[0].Function.body.?.statements[0];
 
-    switch (stmt) {
-        .Let => |let_stmt| {
-            // 2. 检查 Pattern
-            switch (let_stmt.pattern) {
-                .StructDestructuring => |sd| {
-                    // 验证解析出了 x 字段
-                    try std.testing.expectEqual(@as(usize, 1), sd.fields.len);
+    switch (stmt.Let.pattern) {
+        .StructDestructuring => |sd| {
+            // 验证字段数量和 .. 标志
+            try testing.expectEqual(@as(usize, 1), sd.fields.len);
+            try testing.expect(sd.ignore_remaining == true);
+        },
+        else => try testing.expect(false),
+    }
+}
 
-                    // 验证 ignore_remaining (..) 被正确设置
-                    try std.testing.expect(sd.ignore_remaining == true);
+test "Parser: Nested Declarations (Local Static & Struct)" {
+    // 测试点：Statement 现在可以包含 Declaration
+    // 我们在函数内部定义 static 变量和 struct
+    const source =
+        \\fn main() {
+        \\    static counter: i32 = 0;
+        \\    struct Inner { val: u8 }
+        \\    let x = Inner { val: 1 };
+        \\}
+    ;
+    var tc = TestContext.init(source);
+    defer tc.deinit();
+
+    const mod = try tc.parse();
+    const body = mod.declarations[0].Function.body.?;
+
+    // 语句 1: static counter (Declaration)
+    const stmt1 = body.statements[0];
+    switch (stmt1) {
+        .Declaration => |d| {
+            try testing.expectEqual(ast.GlobalVarKind.Static, d.GlobalVar.kind);
+            // 验证名字是 counter
+            const name = tc.parser.context.resolve(d.GlobalVar.name);
+            try testing.expectEqualStrings("counter", name);
+        },
+        else => try testing.expect(false),
+    }
+
+    // 语句 2: struct Inner (Declaration)
+    const stmt2 = body.statements[1];
+    switch (stmt2) {
+        .Declaration => |d| {
+            switch (d) {
+                .Struct => |s| {
+                    const name = tc.parser.context.resolve(s.name);
+                    try testing.expectEqualStrings("Inner", name);
                 },
-                else => try std.testing.expect(false), // Pattern 类型不对
+                else => try testing.expect(false),
             }
         },
-        else => try std.testing.expect(false), // 不是 Let 语句
+        else => try testing.expect(false),
+    }
+
+    // 语句 3: let x (LetStatement)
+    const stmt3 = body.statements[2];
+    try testing.expect(stmt3 == .Let);
+}
+
+test "Parser: Static Mut and Const (Global Scope)" {
+    const source =
+        \\const PI: f32 = 3.14;
+        \\static mut GlobalCounter: i32 = 0;
+    ;
+    var tc = TestContext.init(source);
+    defer tc.deinit();
+    const mod = try tc.parse();
+
+    // 1. const PI
+    const d1 = mod.declarations[0].GlobalVar;
+    try testing.expectEqual(ast.GlobalVarKind.Const, d1.kind);
+
+    // 2. static mut GlobalCounter
+    const d2 = mod.declarations[1].GlobalVar;
+    try testing.expectEqual(ast.GlobalVarKind.StaticMut, d2.kind);
+}
+
+test "Parser: Block Result Expression (No Semicolon)" {
+    const source =
+        \\fn get_val() i32 {
+        \\    let a = 1;
+        \\    a + 1 // 没有分号，作为返回值
+        \\}
+    ;
+    var tc = TestContext.init(source);
+    defer tc.deinit();
+    const mod = try tc.parse();
+
+    const body = mod.declarations[0].Function.body.?;
+
+    // 验证 statements 只有 let a = 1
+    try testing.expectEqual(@as(usize, 1), body.statements.len);
+
+    // 验证 result_expression 存在且是 BinaryExpression
+    try testing.expect(body.result_expression != null);
+    switch (body.result_expression.?) {
+        .Binary => {},
+        else => try testing.expect(false),
+    }
+}
+
+test "Parser: Inclusive Range" {
+    const source =
+        \\fn main() {
+        \\    // 1. Range 作为表达式 (Expression)
+        \\    let r = 0..=255; 
+        \\
+        \\    // 2. Range 作为模式 (Pattern)
+        \\    match x {
+        \\        'a'..='z' => {},
+        \\        _ => {}
+        \\    }
+        \\}
+    ;
+
+    var tc = TestContext.init(source);
+    defer tc.deinit();
+    const mod = try tc.parse();
+
+    const func_body = mod.declarations[0].Function.body.?;
+
+    // --- 验证 1: let r = 0..=255; ---
+    const let_stmt = func_body.statements[0].Let;
+    switch (let_stmt.value) {
+        .Range => |r| {
+            try testing.expect(r.is_inclusive == true);
+
+            // 验证 Start
+            try testing.expectEqual(r.start.?.Literal.kind, .Integer);
+            const start_val = tc.parser.context.resolve(r.start.?.Literal.value);
+            try testing.expectEqualStrings("0", start_val);
+
+            // 验证 End
+            try testing.expectEqual(r.end.?.Literal.kind, .Integer);
+            const end_val = tc.parser.context.resolve(r.end.?.Literal.value);
+            try testing.expectEqualStrings("255", end_val);
+        },
+        else => try testing.expect(false),
+    }
+
+    // --- 验证 2: match ... 'a'..='z' ---
+    // 检查 result_expression 是否存在
+    try testing.expect(func_body.result_expression != null);
+
+    // 获取表达式
+    const match_expr = func_body.result_expression.?;
+
+    switch (match_expr) {
+        .Match => |m| {
+            const arm = m.arms[0];
+            switch (arm.pattern) {
+                .Range => |r| {
+                    try testing.expect(r.is_inclusive == true);
+                    // 验证 Start 'a'
+                    try testing.expectEqual(r.start.kind, .Character);
+                    // 验证 End 'z'
+                    try testing.expectEqual(r.end.kind, .Character);
+                },
+                else => try testing.expect(false),
+            }
+        },
+        else => try testing.expect(false),
     }
 }
