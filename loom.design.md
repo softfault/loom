@@ -1907,8 +1907,8 @@ let numbers = vec![gpa, 10, 20, 30];
 
 宏调用的标记是后缀 `!`。
 
-* **语法：** `path::to::macro_name!(args)`
-* 解析器将其视为：`Expr(Path(path::to::macro_name), SuffixOp(!), Args(args))`。
+* **语法：** `path.to.macro_name!(args)`
+* 解析器将其视为：`Expr(Path(path.to.macro_name), SuffixOp(!), Args(args))`。
 
 ### 2.2 模块化规则
 
