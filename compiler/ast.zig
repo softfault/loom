@@ -32,6 +32,8 @@ pub const BinaryOperator = enum {
     ShiftLeft, // <<
     ShiftRight, // >>
 
+    NullCoalesce, // ?
+
     pub fn fromToken(token: TokenType) BinaryOperator {
         return switch (token) {
             .Plus => .Add,
@@ -52,6 +54,7 @@ pub const BinaryOperator = enum {
             .Caret => .BitwiseXor,
             .LShift => .ShiftLeft,
             .RShift => .ShiftRight,
+            .Question => .NullCoalesce,
             else => unreachable, // Parser 逻辑保证了只会传合法的 token 进来
         };
     }
@@ -118,7 +121,6 @@ pub const Expression = union(enum) {
     GenericInstantiation: *GenericInstantiationExpression,
     MemberAccess: *MemberAccessExpression, // obj.field
     IndexAccess: *IndexAccessExpression, // arr[index]
-    Unwrap: *UnwrapExpression, // ptr.?
     Propagate: *PropagateExpression, // result?
     // 宏调用表达式
     MacroCall: *MacroCallExpression,
@@ -131,6 +133,7 @@ pub const Expression = union(enum) {
     StructInitialization: *StructInitializationExpression, // Point { x: 1 }
     ArrayInitialization: *ArrayInitializationExpression, // [1, 2, 3]
     TupleInitialization: *TupleInitializationExpression, // (1, "a")
+    Range: *RangeExpression, // 1..100
 
     // 控制流表达式
     If: *IfExpression,
@@ -143,6 +146,7 @@ pub const Expression = union(enum) {
     ArrayType: *ArrayTypeExpression, // [N]T
     OptionalType: *OptionalTypeExpression, // ?T
     FunctionType: *FunctionTypeExpression, // fn(i32) i32
+    NeverType: Span,
 
     /// 获取表达式的 Span
     pub fn span(self: Expression) Span {
@@ -156,13 +160,13 @@ pub const Expression = union(enum) {
             .GenericInstantiation => |v| v.span,
             .MemberAccess => |v| v.span,
             .IndexAccess => |v| v.span,
-            .Unwrap => |v| v.span,
             .ImportGroup => |v| v.span,
             .Propagate => |v| v.span,
             .MacroCall => |v| v.span,
             .StructInitialization => |v| v.span,
             .ArrayInitialization => |v| v.span,
             .TupleInitialization => |v| v.span,
+            .Range => |v| v.span,
             .If => |v| v.span,
             .Match => |v| v.span,
             .Block => |v| v.span,
@@ -171,6 +175,7 @@ pub const Expression = union(enum) {
             .ArrayType => |v| v.span,
             .OptionalType => |v| v.span,
             .FunctionType => |v| v.span,
+            .NeverType => |s| s,
         };
     }
 };
@@ -186,6 +191,7 @@ pub const Literal = struct {
         Boolean,
         Undef, // undef 关键字
         Null,
+        Unreachable,
     };
     kind: Kind,
     value: SymbolId, // 存储字符串化的值，留待语义分析阶段解析为数字
@@ -310,6 +316,13 @@ pub const TupleInitializationExpression = struct {
     span: Span,
 };
 
+pub const RangeExpression = struct {
+    start: ?Expression, // null 表示 ..5 中的 start (0)
+    end: ?Expression, // null 表示 1.. 中的 end (len)
+    is_inclusive: bool,
+    span: Span,
+};
+
 pub const IfExpression = struct {
     condition: Expression,
     then_branch: *BlockExpression,
@@ -380,6 +393,7 @@ pub const Pattern = union(enum) {
     StructDestructuring: StructDestructuringPattern, // Point { x, y }
     TupleDestructuring: TupleDestructuringPattern, // (a, b)
     EnumMatching: EnumMatchingPattern, // .Ok(v) 或 Result.Ok(v)
+    Range: RangePattern, // 1..100
 
     pub fn span(self: Pattern) Span {
         return switch (self) {
@@ -389,6 +403,7 @@ pub const Pattern = union(enum) {
             .StructDestructuring => |v| v.span,
             .TupleDestructuring => |v| v.span,
             .EnumMatching => |v| v.span,
+            .Range => |v| v.span,
         };
     }
 };
@@ -424,10 +439,19 @@ pub const EnumMatchingPattern = struct {
     span: Span,
 };
 
+// pattern 出现在enum中要求是字面量
+pub const RangePattern = struct {
+    start: Literal,
+    end: Literal,
+    is_inclusive: bool,
+    span: Span,
+};
+
 /// 语句 (Statement)
 pub const Statement = union(enum) {
     Let: *LetStatement,
-    Const: *ConstStatement,
+    // 声明作为语句
+    Declaration: Declaration,
 
     // 表达式语句 (例如函数调用 `do_something();`)
     ExpressionStatement: Expression,
@@ -441,8 +465,7 @@ pub const Statement = union(enum) {
     pub fn span(self: Statement) Span {
         return switch (self) {
             .Let => |v| v.span,
-            .Var => |v| v.span,
-            .Const => |v| v.span,
+            .Declaration => |v| v.span(),
             .ExpressionStatement => |v| v.span(),
             .For => |v| v.span,
             .Break => |v| v.span,
@@ -510,6 +533,22 @@ pub const Declaration = union(enum) {
     TypeAlias: *TypeAliasDeclaration,
     // 全局变量: pub const PI = 3.14;
     GlobalVar: *GlobalVarDeclaration,
+
+    pub fn span(self: Declaration) Span {
+        return switch (self) {
+            .Function => |v| v.span,
+            .Struct => |v| v.span,
+            .Enum => |v| v.span,
+            .Union => |v| v.span,
+            .Trait => |v| v.span,
+            .Implementation => |v| v.span,
+            .Macro => |v| v.span,
+            .Use => |v| v.span,
+            .ExternBlock => |v| v.span,
+            .TypeAlias => |v| v.span,
+            .GlobalVar => |v| v.span,
+        };
+    }
 };
 
 pub const FunctionDeclaration = struct {
@@ -530,7 +569,7 @@ pub const Visibility = enum {
 
 pub const GenericParameter = struct {
     name: SymbolId,
-    constraint: ?Expression, // T: Addable
+    constraints: []Expression,
     default_value: ?Expression,
     span: Span,
 };
@@ -555,6 +594,9 @@ pub const StructDeclaration = struct {
     // 如果没有继承，则为 null
     base_type: ?Expression,
     fields: []StructFieldDeclaration,
+    // 静态成员 : 命名空间内容 (pub const A = 1, fn new(), impl...)
+    // 这里可以包含 impl 块，也可以包含嵌套的 struct
+    declarations: []Declaration,
     span: Span,
 };
 
@@ -609,6 +651,7 @@ pub const TraitDeclaration = struct {
     name: SymbolId,
     visibility: Visibility,
     generics: []GenericParameter,
+    super_traits: []Expression,
     methods: []FunctionDeclaration, // trait 里的函数通常只有签名
     span: Span,
 };
@@ -623,7 +666,9 @@ pub const ImplementationDeclaration = struct {
     target_type: Expression,
     // impl Type: Trait
     trait_interface: ?Expression,
-    methods: []FunctionDeclaration,
+    // 允许: fn (methods), const, static, struct, union...
+    // 限制: Parser 必须在解析 impl 内部时，禁止解析嵌套的 impl (if tag == .Implementation error)
+    declarations: []Declaration,
     span: Span,
 };
 
@@ -655,13 +700,13 @@ pub const TypeAliasDeclaration = struct {
 pub const GlobalVarDeclaration = struct {
     kind: GlobalVarKind,
     visibility: Visibility,
-    pattern: Pattern, // 通常顶层只允许 Identifier，但为了统一先用 Pattern
+    name: SymbolId,
     type_annotation: ?Expression,
     value: Expression,
     span: Span,
 };
 
-pub const GlobalVarKind = enum { Let, Const };
+pub const GlobalVarKind = enum { Static, StaticMut, Const };
 
 /// 宏定义
 /// 宏片段说明符 (对应 $x:expr 中的 expr)
@@ -707,7 +752,7 @@ pub const MacroRepetitionOp = enum {
 
 pub const MacroRule = struct {
     matchers: []MacroMatcher, // 匹配模式序列
-    body: Expression, // 宏展开体 (通常是 BlockExpression)
+    body: []const Token,
     span: Span,
 };
 

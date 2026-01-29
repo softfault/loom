@@ -48,22 +48,29 @@ pub const Lexer = struct {
             '#' => self.makeToken(.Hash),
             '?' => self.makeToken(.Question),
             '$' => self.makeToken(.Dollar),
+            '@' => self.makeToken(.At),
             // Dot 家族处理
             '.' => {
                 // 1. 检查 ...
                 if (self.match('.')) {
+                    // 检查是否是 ... (变长参数)
                     if (self.match('.')) {
-                        return self.makeToken(.Ellipsis); // ...
+                        return self.makeToken(.Ellipsis);
                     }
-                    return self.makeToken(.DotDot); // ..
+                    // 检查是否是 ..= (范围匹配) [新增]
+                    else if (self.match('=')) {
+                        return self.makeToken(.DotDotEqual);
+                    }
+                    // 否则就是普通的 ..
+                    return self.makeToken(.DotDot);
                 }
                 // 2. 检查 .?
                 else if (self.match('?')) {
                     return self.makeToken(.DotQuestion);
                 }
-                // 3. 检查 .&
-                else if (self.match('&')) {
-                    return self.makeToken(.DotAmpersand);
+                // 3. 检查 .*
+                else if (self.match('*')) {
+                    return self.makeToken(.DotStar);
                 }
                 // 4. 检查 .<
                 else if (self.match('<')) {
@@ -497,7 +504,27 @@ fn expectTokens(source: []const u8, expected_tags: []const TokenType) !void {
 
 test "Lexer - Basic Symbols" {
     try expectTokens("= + ( ) { }", &.{ .Assign, .Plus, .LParen, .RParen, .LBrace, .RBrace });
-    try expectTokens("#len ?opt val.? val.& func.<T> ...", &.{ .Hash, .Identifier, .Question, .Identifier, .Identifier, .DotQuestion, .Identifier, .DotAmpersand, .Identifier, .DotLessThan, .Identifier, .GreaterThan, .Ellipsis });
+
+    try expectTokens("#len ?opt val.? val.* func.<T> ... @bitcast 1..=10", &.{
+        .Hash,
+        .Identifier,
+        .Question,
+        .Identifier,
+        .Identifier,
+        .DotQuestion,
+        .Identifier,
+        .DotStar, // val.*
+        .Identifier,
+        .DotLessThan,
+        .Identifier,
+        .GreaterThan,
+        .Ellipsis,
+        .At, // @
+        .Identifier, // bitcast
+        .IntLiteral,
+        .DotDotEqual, // ..=
+        .IntLiteral,
+    });
 }
 
 test "Lexer - Numbers" {
@@ -523,7 +550,6 @@ test "Lexer - Numbers" {
 }
 
 test "Lexer - Range vs Float" {
-    // 这是一个非常关键的边缘情况测试
     // 1..5 应该是 Int, DotDot, Int
     // 1.5 应该是 Float
     try expectTokens("1..5", &.{ .IntLiteral, .DotDot, .IntLiteral });
@@ -554,14 +580,15 @@ test "Lexer - Strings" {
 
 test "Lexer - Keywords and Identifiers" {
     try expectTokens(
-        \\fn let var my_var Return return
+        \\fn let mut my_var Return return static
     , &.{
-        .Fn, // fn
-        .Let, // let
-        .Var, // var
+        .Fn,
+        .Let,
+        .Mut, // mut
         .Identifier, // my_var
-        .Identifier, // Return (大写R，Loom关键字是小写，所以它是标识符)
-        .Return, // return
+        .Identifier, // Return (大写)
+        .Return,
+        .Static, // static
     });
 }
 

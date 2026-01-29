@@ -16,6 +16,7 @@ pub const Token = struct {
         .{ "let", .Let },
         .{ "mut", .Mut },
         .{ "const", .Const },
+        .{ "static", .Static },
         .{ "struct", .Struct },
         .{ "enum", .Enum },
         .{ "union", .Union },
@@ -43,6 +44,7 @@ pub const Token = struct {
         .{ "and", .And },
         .{ "or", .Or },
         .{ "null", .Null },
+        .{ "unreach", .Unreach },
         .{ "_", .Underscore },
     });
 };
@@ -61,6 +63,7 @@ pub const TokenType = enum {
     Let,
     Mut,
     Const,
+    Static,
     Struct,
     Enum,
     Union,
@@ -88,17 +91,19 @@ pub const TokenType = enum {
     And,
     Or,
     Null,
+    Unreach,
     Underscore,
 
     // === 运算符与符号 ===
 
-    // + - * / % #
+    // + - * / % # @
     Plus,
     Minus,
     Star,
     Slash,
     Percent,
     Hash,
+    At,
 
     // == ! !=
     Equal,
@@ -138,9 +143,10 @@ pub const TokenType = enum {
 
     Dot, // .
     DotDot, // ..
+    DotDotEqual, // ..=
     DotQuestion, // .?
     DotLessThan, // .<
-    DotAmpersand, // .&
+    DotStar, // .*
     Ellipsis, // ...
     Comma, // ,
     Colon, // :
